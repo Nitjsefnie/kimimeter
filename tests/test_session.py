@@ -171,7 +171,13 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
 
 
 def test_non_string_secret_rejected_at_ladder_str_lengths():
-    """Property, not a sample: every ladder non-string is absent.
+    """Sampled, not exhaustive — but the sample is a ladder, and the
+    ladder spans orders of magnitude.
+
+    That buys one thing honestly: every threshold-shaped length rule
+    set below the ladder's reach is fed a rung that kills it. What
+    sampling cannot buy — closure against interval-shaped rules hiding
+    between rungs — is stated as a limitation at the end.
 
     The two sides are different in kind. The ACCEPT side IS closed: the
     positive assertion above returns a valid short string unchanged,
