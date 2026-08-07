@@ -213,6 +213,70 @@ def _guest_deny(request: Request, path: str) -> Response | None:
     return None
 
 
+def _session_cookie_domain() -> str | None:
+    """The registrable domain the session cookie is shared across, or None.
+
+    Single source for both cookie helpers — a browser keys a cookie on
+    (name, domain, path), so setter and clearer must agree on the domain
+    by construction, not by two copies of the same lookup. Read per call,
+    not hoisted into a module constant, so tests can set the variable
+    after import. Unset → host-only cookie, the pre-sharing behaviour: a
+    developer checkout is not served from the shared domain and must not
+    try to set a cookie for it.
+    """
+    return os.environ.get("SESSION_COOKIE_DOMAIN") or None
+
+
+def set_session_cookie(response, token: str, *, guest: bool = False) -> None:
+    """The one place a session cookie is issued.
+
+    Every issuing path must go through this so a new attribute cannot
+    reach some responses and not others. Guest cookies are excluded from
+    sharing (guest=True): the guest secret is per-service, so a shared
+    guest cookie would be rejected by every service except the one that
+    issued it and would shadow the host-only one.
+    """
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=os.environ.get("COOKIE_SECURE", "1") == "1",
+        samesite="strict",
+        max_age=SESSION_COOKIE_MAX_AGE,
+        path="/",
+        domain=None if guest else _session_cookie_domain(),
+    )
+
+
+def clear_session_cookie(response) -> None:
+    """The one place the session cookie is cleared.
+
+    A browser keys a cookie on (name, domain, path), so the deletion must
+    agree with set_session_cookie on all three or it writes an expired
+    cookie that does not match the live one and logout silently stops
+    working. The domain comes from the same _session_cookie_domain()
+    source as the setter.
+
+    Both keyings are cleared. The host-only deletion is UNCONDITIONAL:
+    with the variable unset it is the only deletion, and with it set it
+    is the one that reaches a cookie issued BEFORE the rollout — that
+    cookie is keyed (name, host-only, path), so a browser holding it
+    keeps authenticating after a logout that deletes only the
+    domain-keyed one.
+    """
+    domain = _session_cookie_domain()
+    if domain is not None:
+        response.delete_cookie(
+            SESSION_COOKIE_NAME,
+            path="/",
+            domain=domain,
+        )
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        path="/",
+    )
+
+
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if path in _AUTH_PUBLIC_PATHS:
