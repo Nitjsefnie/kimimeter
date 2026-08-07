@@ -24,12 +24,27 @@ def test_verify_rejects_wrong_secret():
     assert session.verify_session_token(tok, "secret-b" * 4) is None
 
 
-def test_verify_rejects_expired_token():
-    secret = "k" * 32
-    tok = session.make_session_token(7, secret)
-    far_future = int(time.time()) + session.SESSION_COOKIE_MAX_AGE + 60
-    with patch.object(session.time, "time", return_value=far_future):
-        assert session.verify_session_token(tok, secret) is None
+def test_resolve_accepts_token_older_than_max_age(seeded_user):
+    """Sessions end by revocation, not by the clock: a token issued far
+    longer ago than SESSION_COOKIE_MAX_AGE still resolves to its user
+    while its nonce has an active web_sessions row.
+
+    The age is expressed relative to the constant, never hardcoded — an
+    offset that happens to sit below the constant would pass even with
+    the old clock-expiry check in place, proving nothing. The nonce is
+    recorded AND asserted active, so resolve can only succeed by passing
+    signature verification — it cannot pass for the wrong reason."""
+    uid, secret = seeded_user
+    issued = int(time.time()) - (session.SESSION_COOKIE_MAX_AGE + 86400)
+    with patch.object(session.time, "time", return_value=issued):
+        tok = session.make_session_token(uid, secret)
+    parsed = session.parse_session_token(tok)
+    assert parsed is not None
+    sessions_repo.record_session(uid, parsed[2], "curl", "127.0.0.1")
+    # Precondition: the nonce really is active, so resolve can only
+    # succeed through the verification path.
+    assert sessions_repo.is_session_active(parsed[2]) is True
+    assert session.resolve_session_user_id(tok) == uid
 
 
 def test_verify_rejects_future_token():
@@ -116,6 +131,12 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
     handling keeps this token out. Nonces are disjoint across cases by
     construction (make_session_token draws a fresh random nonce)."""
     uid = 4321
+    # The binding assertion targets the helper's isinstance contract
+    # directly, not the public resolve path below.
+    # pylint: disable=protected-access
+    assert session._stored_session_secret(
+        {session.WEB_SESSION_SECRET_KEY: stored}
+    ) == ""
     with db.auth_conn() as c:
         c.execute(
             "INSERT INTO users (user_id, config) VALUES (%s, %s::jsonb) "

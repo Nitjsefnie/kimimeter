@@ -67,8 +67,6 @@ def verify_session_token(token: str, secret: str):
     now = int(time.time())
     if issued_at > now + 60:
         return None
-    if now - issued_at > SESSION_COOKIE_MAX_AGE:
-        return None
     payload = f"{user_id}.{issued_at}.{parsed[2]}"
     expected = hmac.new(
         secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
