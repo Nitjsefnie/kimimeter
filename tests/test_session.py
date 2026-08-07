@@ -117,8 +117,13 @@ def test_check_origin_accepts_same_origin_post():
 
 @pytest.mark.parametrize(
     "stored",
-    [None, 0, False, [], {}],
-    ids=["null", "zero", "false", "empty-list", "empty-dict"],
+    # The big int is load-bearing: every other value has a short str(),
+    # on which a "len(str(value)) > N" length floor is indistinguishable
+    # from the isinstance check. A 20-char str() is what kills a floor
+    # set above the short values (e.g. > 5) — without it that mutant
+    # survives the whole suite.
+    [None, 0, False, [], {}, 12345678901234567890],
+    ids=["null", "zero", "false", "empty-list", "empty-dict", "long-int"],
 )
 def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
     """A stored non-string secret is ABSENT, never coerced with str().

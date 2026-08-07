@@ -9,6 +9,7 @@
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_TEST_AUTH_DB = "kimimeter_test_auth"
+# Per-run suffix for every scratch database name: stable within one pytest
+# process, unique across runs. Two concurrent runs — of this suite, or of
+# this suite and a sibling repo's against the same Postgres — must never
+# share a scratch database: a fixed name lets one run's dropdb/createdb
+# destroy the other's database mid-test. Prefixes stay recognisable, and
+# setup/teardown compute the name from this same constant, so teardown
+# drops exactly what setup created.
+_RUN_SUFFIX = f"{os.getpid():x}-{uuid.uuid4().hex[:8]}"
+
+
+def run_db_name(prefix: str) -> str:
+    """This run's scratch database name for a recognisable prefix."""
+    return f"{prefix}_{_RUN_SUFFIX}"
+
+
+_TEST_AUTH_DB = run_db_name("kimimeter_test_auth")
 
 # Claim DATABASE_URL_VIZ before anything can load the repo's .env.
 #
@@ -39,7 +55,7 @@ _TEST_AUTH_DB = "kimimeter_test_auth"
 # The ordering is load-bearing: this must run above any import that pulls in
 # a backend module. It is a backstop, not a replacement — DB-touching tests
 # still monkeypatch their own scratch database.
-os.environ.setdefault("DATABASE_URL_VIZ", "postgresql:///kimimeter_test")
+os.environ.setdefault("DATABASE_URL_VIZ", f"postgresql:///{run_db_name('kimimeter_test')}")
 # DATABASE_URL_AUTH gets the same guard: .env pins it at the live auth
 # database, and without this setdefault any test that touches auth outside
 # the auth_db fixture (e.g. a `pytest -k` partial run) would read from —

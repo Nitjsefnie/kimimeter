@@ -15,6 +15,7 @@ from backend import api_dashboard as api_dash_mod
 from backend import api_sessions as api_sess_mod
 from backend import cache, db, ingest, pricing
 from backend.api import _tool_source
+from tests.conftest import run_db_name
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,12 +42,14 @@ def _pg_cur():
         conn.close()
 
 
-def _build_app(monkeypatch, pre_ingest=None, test_db="kimimeter_test_api"):
+def _build_app(monkeypatch, pre_ingest=None, test_db=None):
     """Spin up a fresh DB + mini R2, optionally mutate the temp R2 tree,
     ingest, and yield a TestClient on the api router — then tear it down.
 
     Bypasses auth via a clean FastAPI app with only the api router.
     """
+    if test_db is None:
+        test_db = run_db_name("kimimeter_test_api")
     os.system(f"dropdb --if-exists {test_db} 2>/dev/null")
     os.system(f"createdb {test_db} 2>/dev/null")
     os.system(f"psql {test_db} -f {_REPO_ROOT / 'backend/schema.sql'} >/dev/null")
@@ -95,7 +98,7 @@ def _app_with_fresh_data():
     contaminate the shared module-scoped client."""
     mp = pytest.MonkeyPatch()
     try:
-        yield from _build_app(mp, test_db="kimimeter_test_api_mut")
+        yield from _build_app(mp, test_db=run_db_name("kimimeter_test_api_mut"))
     finally:
         mp.undo()
 
@@ -139,7 +142,7 @@ def _app_with_unresolved():
     mp = pytest.MonkeyPatch()
     try:
         yield from _build_app(
-            mp, pre_ingest=_inject_junk, test_db="kimimeter_test_unres"
+            mp, pre_ingest=_inject_junk, test_db=run_db_name("kimimeter_test_unres")
         )
     finally:
         mp.undo()
@@ -179,7 +182,8 @@ def _app_with_two_models():
     mp = pytest.MonkeyPatch()
     try:
         yield from _build_app(
-            mp, pre_ingest=_inject_early_model, test_db="kimimeter_test_twomodel"
+            mp, pre_ingest=_inject_early_model,
+            test_db=run_db_name("kimimeter_test_twomodel"),
         )
     finally:
         mp.undo()

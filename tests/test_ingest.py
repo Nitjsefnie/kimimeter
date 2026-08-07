@@ -14,6 +14,7 @@ from botocore.exceptions import ConnectionClosedError
 from backend import api, api_dashboard, cache, db, ingest
 from backend.cache import _warm_kwargs
 from backend.ingest import _failure_summary
+from tests.conftest import run_db_name
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -25,7 +26,7 @@ _FLAKY_KEY = "sessions/projA/sess-A/wire.jsonl"
 @pytest.fixture(name="fresh_db")
 def _fresh_db(monkeypatch):
     """Per-test schema reset on a separate DB."""
-    test_db = "kimimeter_test"
+    test_db = run_db_name("kimimeter_test")
     os.system(f"dropdb --if-exists {test_db} 2>/dev/null")
     os.system(f"createdb {test_db} 2>/dev/null")
     os.system(f"psql {test_db} -f {_REPO_ROOT / 'backend/schema.sql'} >/dev/null")
