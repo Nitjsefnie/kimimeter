@@ -194,7 +194,7 @@ def test_non_string_secret_rejected_at_every_str_length():
     values = [0, 7, 42] + [[0] * n for n in
                            (1, 2, 5, 10, 34, 100, 334, 1000, 3334, 10000,
                             33334, 100000)]
-    assert len(str(values[-1])) > 100_000  # the sweep's documented reach
+    assert len(str(values[-1])) >= 300_000  # the sweep's documented reach
     for value in values:
         assert not isinstance(value, str)
         # pylint: disable=protected-access
