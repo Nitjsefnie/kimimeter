@@ -149,6 +149,9 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
     assert session._stored_session_secret(
         {session.WEB_SESSION_SECRET_KEY: stored}
     ) == ""
+    assert session._stored_session_secret(
+        {session.WEB_SESSION_SECRET_KEY: "s"}
+    ) == "s"
     with db.auth_conn() as c:
         c.execute(
             "INSERT INTO users (user_id, config) VALUES (%s, %s::jsonb) "
