@@ -37,3 +37,6 @@ __pycache__/
 .pytest_cache/
 *.pyc
 scripts/discord_mb.py
+
+# never commit: the secrecy-check literal list
+.secrecy-literals
