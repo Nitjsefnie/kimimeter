@@ -131,7 +131,7 @@ def test_check_origin_accepts_same_origin_post():
     # disjunction "isinstance(...) or len(str(value)) > N" with N above
     # 20 still survives this list — a sample cannot close an unbounded
     # input class. The property test below
-    # (test_non_string_secret_rejected_at_every_str_length) bounds it:
+    # (test_non_string_secret_rejected_at_ladder_str_lengths) bounds it:
     # proven up to the ladder's reach, survivable above it.
     [None, 0, False, [], {}, 12345678901234567890],
     ids=["null", "zero", "false", "empty-list", "empty-dict", "long-int"],
@@ -170,7 +170,7 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
     assert session.resolve_session_user_id(forged) is None
 
 
-def test_non_string_secret_rejected_at_every_str_length():
+def test_non_string_secret_rejected_at_ladder_str_lengths():
     """Property, not a sample: every ladder non-string is absent.
 
     The two sides are different in kind. The ACCEPT side IS closed: the
@@ -187,7 +187,18 @@ def test_non_string_secret_rejected_at_every_str_length():
     derived from a fixed size ladder, no generator package. The reach
     assertion below is load-bearing — precisely because a floor above
     the bound survives, if someone shrinks the ladder the test must
-    fail on its own bound instead of silently lowering it."""
+    fail on its own bound instead of silently lowering it.
+
+    One limitation, stated precisely so nobody "fixes" it later by
+    piling on values: a THRESHOLD-shaped mutant anywhere below the
+    ladder's reach is caught, as argued above, but an INTERVAL-shaped
+    mutant `LO <= len(str(value)) <= HI` is caught only if some rung's
+    str() length falls inside the interval — a band placed between two
+    rungs (e.g. 4000..9000, where the ladder holds 3000 and 10002 and
+    nothing in between) survives the full suite. Adding rungs narrows
+    those gaps but can never close that class — sampling is not
+    coverage — so more values would only buy a slower suite and a
+    false sense of exhaustiveness."""
     key = session.WEB_SESSION_SECRET_KEY
     # str([0] * n) is 3*n chars, so the ladder spans str() lengths
     # 3 .. 300_000; the ints cover the 1..2 char end.
