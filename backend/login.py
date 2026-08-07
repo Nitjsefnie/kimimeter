@@ -15,6 +15,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from backend import auth
 from backend import session as session_mod
 from backend import db
+from backend import sessions_repo
 
 
 router = APIRouter()
@@ -108,7 +109,9 @@ async def login_post(
     user_id: str = Form(""),
     password: str = Form(""),
 ) -> Response:
-    ip = request.client.host if request.client else "unknown"
+    # "" is the single "missing" sentinel — it matches the web_sessions.ip
+    # column default and the value record_session stores below.
+    ip = request.client.host if request.client else ""
     if _check_login_rate_limit(ip):
         return Response(
             "Too many login attempts. Try again later.",
@@ -140,6 +143,17 @@ async def login_post(
     secret = session_mod.get_or_create_session_secret(config)
     session_mod.write_user_config(uid, config)
     token = session_mod.make_session_token(uid, secret)
+    parsed = session_mod.parse_session_token(token)
+    if parsed is not None:
+        # The insert must precede the cookie: an unrecordable session
+        # fails loudly here rather than minting a cookie that can never
+        # authenticate (resolve_session_user_id rejects unknown nonces).
+        sessions_repo.record_session(
+            uid,
+            parsed[2],
+            request.headers.get("user-agent", ""),
+            ip,
+        )
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         session_mod.SESSION_COOKIE_NAME, token,

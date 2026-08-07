@@ -1,4 +1,13 @@
+# pylint: disable=import-outside-toplevel,redefined-outer-name
+# import-outside-toplevel: the backend.* imports inside the fixtures below
+# are deferred ON PURPOSE — the setdefaults below must land in os.environ
+# before any backend module that reads env is imported, or the guard is
+# void. Do not hoist them. redefined-outer-name: the fixture-argument
+# pattern (a fixture taking another fixture by name) is standard pytest;
+# the fixture names are part of the shared contract consumed by other test
+# modules and must not change.
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # instead of duplicating an expensive fresh-DB + mini-R2 setup.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_TEST_AUTH_DB = "kimimeter_test_auth"
+
 # Claim DATABASE_URL_VIZ before anything can load the repo's .env.
 #
 # backend/app.py calls db.load_dotenv(".env") at IMPORT time, and .env points
@@ -27,6 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # a backend module. It is a backstop, not a replacement — DB-touching tests
 # still monkeypatch their own scratch database.
 os.environ.setdefault("DATABASE_URL_VIZ", "postgresql:///kimimeter_test")
+# DATABASE_URL_AUTH gets the same guard: .env pins it at the live auth
+# database, and without this setdefault any test that touches auth outside
+# the auth_db fixture (e.g. a `pytest -k` partial run) would read from —
+# and now that login records sessions, WRITE to — the production database.
+os.environ.setdefault("DATABASE_URL_AUTH", f"postgresql:///{_TEST_AUTH_DB}")
 # Force file-mode R2 for unit tests; pytest never hits real R2.
 os.environ.setdefault("R2_ENDPOINT", "file:///tmp/kd-test-r2/")
 os.environ.setdefault("R2_BUCKET", "kimi")
@@ -50,3 +68,67 @@ def _reset_response_cache():
     cache.response_cache.clear()
     yield
     cache.response_cache.clear()
+
+
+_TEST_SECRET = "fixture-session-secret-0123456789"
+_TEST_UID = 4242
+
+
+@pytest.fixture(scope="module")
+def auth_db():
+    """A scratch auth DB with web_sessions and one seeded user row.
+
+    Module-scoped: rows written by one test persist for the rest of the
+    module. Two rules keep tests from seeing each other's state: nonces
+    must be disjoint per test, always; and any test that asserts over
+    list_sessions must use a private user_id (not _TEST_UID), since that
+    query is keyed by user alone."""
+    os.system(f"dropdb --if-exists {_TEST_AUTH_DB} 2>/dev/null")
+    os.system(f"createdb {_TEST_AUTH_DB} 2>/dev/null")
+    subprocess.run(
+        ["psql", _TEST_AUTH_DB, "-c",
+         "CREATE TABLE users (user_id BIGINT PRIMARY KEY, config JSONB NOT NULL)"],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["psql", _TEST_AUTH_DB, "-f", str(_REPO_ROOT / "backend/schema_auth.sql")],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+    os.environ["DATABASE_URL_AUTH"] = f"postgresql:///{_TEST_AUTH_DB}"
+    from backend import db
+    db.reset_auth_pool()
+    yield
+    db.reset_auth_pool()
+    os.system(f"dropdb --if-exists {_TEST_AUTH_DB} 2>/dev/null")
+
+
+@pytest.fixture
+def seeded_user(auth_db):
+    """(user_id, session_secret) for a user row that exists in the auth DB."""
+    import json
+    from backend import auth, db, session as session_mod
+    config = {session_mod.WEB_SESSION_SECRET_KEY: _TEST_SECRET}
+    auth.set_web_password(config, "fixture-password")
+    with db.auth_conn() as c:
+        c.execute(
+            "INSERT INTO users (user_id, config) VALUES (%s, %s::jsonb) "
+            "ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config",
+            (_TEST_UID, json.dumps(config)),
+        )
+    return _TEST_UID, _TEST_SECRET
+
+
+@pytest.fixture
+def logged_in_client(seeded_user):
+    """TestClient that has completed a real POST /login."""
+    from fastapi.testclient import TestClient
+    from backend.app import app
+    uid, _ = seeded_user
+    client = TestClient(app)
+    resp = client.post(
+        "/login",
+        data={"user_id": str(uid), "password": "fixture-password"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+    return client

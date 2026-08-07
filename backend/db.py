@@ -2,7 +2,11 @@
 
 Two pools:
 - viz_pool   → kimimeter (this app's tables)
-- auth_pool  → external users DB (read-only access to users.config for auth)
+- auth_pool  → the auth DB: reads users.config for auth and UPDATEs it on
+               every successful login (write_user_config stores the
+               web_session_secret), and reads and writes web_sessions for
+               session tracking (login INSERT, throttled last_seen UPDATE,
+               revoke UPDATE)
 
 The pools never join across DBs.
 """
@@ -42,6 +46,19 @@ def auth_pool() -> ConnectionPool:
             kwargs={"autocommit": True},
         )
     return _AUTH
+
+
+def reset_auth_pool() -> None:
+    """Close and drop the cached auth pool so the next auth_pool() call
+    re-reads DATABASE_URL_AUTH. Test suites need this between scratch-DB
+    configurations; production code never calls it."""
+    global _AUTH
+    if _AUTH is not None:
+        try:
+            _AUTH.close()
+        except Exception:  # noqa: BLE001 — teardown must not fail the test
+            pass
+    _AUTH = None
 
 
 def close_viz_pool() -> None:

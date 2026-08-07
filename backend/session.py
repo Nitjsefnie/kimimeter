@@ -17,7 +17,10 @@ from urllib.parse import urlparse
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
+from psycopg import Connection
+
 from backend import db
+from backend import sessions_repo
 
 
 SESSION_COOKIE_NAME = "session"
@@ -84,14 +87,24 @@ def get_or_create_session_secret(config: dict) -> str:
     return secret
 
 
-def load_user_config(user_id: int) -> dict | None:
-    """Fetch the auth DB's users table.config for one user. Returns None if no row."""
-    with db.auth_conn() as c:
-        row = c.execute(
-            "SELECT config FROM users WHERE user_id = %s",
-            (user_id,),
-        ).fetchone()
+def _query_user_config(c: Connection, user_id: int) -> dict | None:
+    row = c.execute(
+        "SELECT config FROM users WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
     return row[0] if row else None
+
+
+def load_user_config(user_id: int, conn: Connection | None = None) -> dict | None:
+    """Fetch the auth DB's users table.config for one user. Returns None if no row.
+
+    Pass an open conn to share one pool checkout with other lookups on
+    the same request (the auth pool is small); omit it to take your own.
+    """
+    if conn is not None:
+        return _query_user_config(conn, user_id)
+    with db.auth_conn() as c:
+        return _query_user_config(c, user_id)
 
 
 def write_user_config(user_id: int, config: dict) -> None:
@@ -117,13 +130,26 @@ def resolve_session_user_id(token: str) -> int | None:
     user_id = parsed[0]
     if user_id == GUEST_USER_ID:
         return verify_session_token(token, _GUEST_SECRET)
-    config = load_user_config(user_id)
-    if config is None:
-        return None
-    secret = str(config.get(WEB_SESSION_SECRET_KEY, "")).strip()
-    if not secret:
-        return None
-    return verify_session_token(token, secret)
+    # Config and nonce state resolve on ONE shared auth-DB connection —
+    # the auth pool is max_size=4, and per-request checkouts must not
+    # grow beyond the pre-change single load_user_config acquisition
+    # plus one (the touch below takes that one). The guest branch above
+    # never reaches this lookup: guests have no web_sessions rows, so a
+    # lookup would reject every guest.
+    with db.auth_conn() as conn:
+        config = load_user_config(user_id, conn=conn)
+        secret = (
+            str(config.get(WEB_SESSION_SECRET_KEY, "")).strip()
+            if config else ""
+        )
+        if not secret:
+            return None
+        if verify_session_token(token, secret) is None:
+            return None
+        if not sessions_repo.is_session_active(parsed[2], conn=conn):
+            return None
+    sessions_repo.touch_session(parsed[2])
+    return user_id
 
 
 def check_origin(request: Request) -> bool:

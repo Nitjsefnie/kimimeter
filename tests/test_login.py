@@ -1,11 +1,15 @@
+import contextlib
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from backend import auth
+from backend import db
 from backend import login as login_mod
 from backend import session as session_mod
+from backend import sessions_repo
 from backend.login import _LOGIN_FAILURES
 
 
@@ -41,7 +45,7 @@ def _fake_user(monkeypatch):
     auth.set_web_password(config, "hunter2")
     store = {12345: config}
 
-    def _load(user_id):
+    def _load(user_id, **_kwargs):
         return store.get(user_id)
 
     def _write(user_id, cfg):
@@ -53,6 +57,29 @@ def _fake_user(monkeypatch):
     monkeypatch.setattr(session_mod, "load_user_config", _load)
     monkeypatch.setattr(session_mod, "write_user_config", _write)
     monkeypatch.setattr(login_mod, "user_exists", _exists)
+    # Session rows go to the real auth DB, which these tests don't have;
+    # row recording is covered end-to-end in test_sessions_repo.py.
+    monkeypatch.setattr(
+        sessions_repo, "record_session", lambda *args, **kwargs: None
+    )
+    # resolve_session_user_id now checks the nonce against web_sessions;
+    # with no real auth DB here, treat every nonce as active. The reject
+    # path is covered against a real DB in test_sessions_repo.py.
+    monkeypatch.setattr(
+        sessions_repo, "is_session_active", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        sessions_repo, "touch_session", lambda *args, **kwargs: None
+    )
+
+    # resolve_session_user_id opens one shared auth_conn() around the
+    # (stubbed) config/nonce lookups; yield a dummy since there is no
+    # real auth DB here at all.
+    @contextlib.contextmanager
+    def _no_auth_conn():
+        yield None
+
+    monkeypatch.setattr(db, "auth_conn", _no_auth_conn)
     return store
 
 
