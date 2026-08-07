@@ -131,7 +131,8 @@ def test_check_origin_accepts_same_origin_post():
     # disjunction "isinstance(...) or len(str(value)) > N" with N above
     # 20 still survives this list — a sample cannot close an unbounded
     # input class. The property test below
-    # (test_non_string_secret_rejected_at_every_str_length) closes it.
+    # (test_non_string_secret_rejected_at_every_str_length) bounds it:
+    # proven up to the ladder's reach, survivable above it.
     [None, 0, False, [], {}, 12345678901234567890],
     ids=["null", "zero", "false", "empty-list", "empty-dict", "long-int"],
 )
@@ -170,18 +171,23 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
 
 
 def test_non_string_secret_rejected_at_every_str_length():
-    """Property, not a sample: EVERY non-string is absent, at any str() length.
+    """Property, not a sample: every ladder non-string is absent.
 
-    The parametrized list above can only raise the bar a length-floor
-    disjunction must clear — the surviving mutant shape is
-    `isinstance(value, str) or len(str(value)) > N`, and adding one more
-    sampled value just moves the floor the mutant needs. This test instead
-    sweeps str() lengths across orders of magnitude, from a 1-char int up
-    to a ~300k-char list, so any fixed floor N fails on the inputs above
-    it. Deterministic and dependency-free on purpose: the inputs are
+    The two sides are different in kind. The ACCEPT side IS closed: the
+    positive assertion above returns a valid short string unchanged,
+    which kills every length floor at once — a floor alone would eat
+    short strings. The REJECT side is bounded, not closed: the ladder
+    sweeps str() lengths from 1 char up to 300 000 characters, so the
+    surviving mutant shape `isinstance(value, str) or len(str(value)) > N`
+    fails for every N below that reach and survives for any N at or
+    above it — a floor set past 300 000 characters coerces nothing this
+    test ever feeds it. That bound is far beyond any plausible real
+    implementation, which is what makes a bound enough here.
+    Deterministic and dependency-free on purpose: the inputs are
     derived from a fixed size ladder, no generator package. The reach
-    assertion is load-bearing — if someone shrinks the ladder, the test
-    fails on its own bound instead of silently reopening the class."""
+    assertion below is load-bearing — precisely because a floor above
+    the bound survives, if someone shrinks the ladder the test must
+    fail on its own bound instead of silently lowering it."""
     key = session.WEB_SESSION_SECRET_KEY
     # str([0] * n) is 3*n chars, so the ladder spans str() lengths
     # 3 .. 300_000; the ints cover the 1..2 char end.
