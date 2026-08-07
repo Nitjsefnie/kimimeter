@@ -124,11 +124,14 @@ def test_check_origin_accepts_same_origin_post():
 
 @pytest.mark.parametrize(
     "stored",
-    # The big int is load-bearing: every other value has a short str(),
-    # on which a "len(str(value)) > N" length floor is indistinguishable
-    # from the isinstance check. A 20-char str() is what kills a floor
-    # set above the short values (e.g. > 5) — without it that mutant
-    # survives the whole suite.
+    # The big int is load-bearing but only RAISES the sampled bar: every
+    # other value has a short str(), on which a "len(str(value)) > N"
+    # length floor is indistinguishable from the isinstance check, and a
+    # 20-char str() kills only a floor set below 20 (e.g. > 5). A
+    # disjunction "isinstance(...) or len(str(value)) > N" with N above
+    # 20 still survives this list — a sample cannot close an unbounded
+    # input class. The property test below
+    # (test_non_string_secret_rejected_at_every_str_length) closes it.
     [None, 0, False, [], {}, 12345678901234567890],
     ids=["null", "zero", "false", "empty-list", "empty-dict", "long-int"],
 )
@@ -164,6 +167,32 @@ def test_non_string_session_secret_is_treated_as_absent(auth_db, stored):
     # on the secret handling — the test cannot pass for the wrong reason.
     assert sessions_repo.is_session_active(parsed[2]) is True
     assert session.resolve_session_user_id(forged) is None
+
+
+def test_non_string_secret_rejected_at_every_str_length():
+    """Property, not a sample: EVERY non-string is absent, at any str() length.
+
+    The parametrized list above can only raise the bar a length-floor
+    disjunction must clear — the surviving mutant shape is
+    `isinstance(value, str) or len(str(value)) > N`, and adding one more
+    sampled value just moves the floor the mutant needs. This test instead
+    sweeps str() lengths across orders of magnitude, from a 1-char int up
+    to a ~300k-char list, so any fixed floor N fails on the inputs above
+    it. Deterministic and dependency-free on purpose: the inputs are
+    derived from a fixed size ladder, no generator package. The reach
+    assertion is load-bearing — if someone shrinks the ladder, the test
+    fails on its own bound instead of silently reopening the class."""
+    key = session.WEB_SESSION_SECRET_KEY
+    # str([0] * n) is 3*n chars, so the ladder spans str() lengths
+    # 3 .. 300_000; the ints cover the 1..2 char end.
+    values = [0, 7, 42] + [[0] * n for n in
+                           (1, 2, 5, 10, 34, 100, 334, 1000, 3334, 10000,
+                            33334, 100000)]
+    assert len(str(values[-1])) > 100_000  # the sweep's documented reach
+    for value in values:
+        assert not isinstance(value, str)
+        # pylint: disable=protected-access
+        assert session._stored_session_secret({key: value}) == ""
 
 
 def test_whitespace_only_session_secret_is_treated_as_absent(auth_db):
