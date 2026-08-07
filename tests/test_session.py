@@ -31,11 +31,18 @@ def test_resolve_accepts_token_older_than_max_age(seeded_user):
 
     The age is expressed relative to the constant, never hardcoded — an
     offset that happens to sit below the constant would pass even with
-    the old clock-expiry check in place, proving nothing. The nonce is
-    recorded AND asserted active, so resolve can only succeed by passing
-    signature verification — it cannot pass for the wrong reason."""
+    the old clock-expiry check in place, proving nothing. The decade-scale
+    offset is the point: a backdate of one day past the constant only
+    proves the window is at least eight days, so a quiet replacement
+    expiry of 30 days (or a year) would still pass. No plausible expiry
+    tolerates a decade-old token, so "the clock became more generous"
+    cannot explain a pass. The nonce is recorded AND asserted active, so
+    resolve can only succeed by passing signature verification — it
+    cannot pass for the wrong reason."""
     uid, secret = seeded_user
-    issued = int(time.time()) - (session.SESSION_COOKIE_MAX_AGE + 86400)
+    issued = int(time.time()) - (
+        session.SESSION_COOKIE_MAX_AGE + 10 * 365 * 86400
+    )
     with patch.object(session.time, "time", return_value=issued):
         tok = session.make_session_token(uid, secret)
     parsed = session.parse_session_token(tok)
