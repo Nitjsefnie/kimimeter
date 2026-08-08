@@ -258,11 +258,24 @@ def clear_session_cookie(response) -> None:
     source as the setter.
 
     Both keyings are cleared. The host-only deletion is UNCONDITIONAL:
-    with the variable unset it is the only deletion, and with it set it
-    is the one that reaches a cookie issued BEFORE the rollout — that
-    cookie is keyed (name, host-only, path), so a browser holding it
-    keeps authenticating after a logout that deletes only the
-    domain-keyed one.
+    with the variable unset it is the one deletion issued, and with it
+    set it is the leg that reaches a cookie issued BEFORE the rollout —
+    that cookie is keyed (name, host-only, path), so a logout whose
+    deletion covers the domain keying alone leaves it in the browser.
+    And a surviving pre-rollout host-only cookie CAN still authenticate.
+    Two witnesses, each pinned by a test: a guest cookie — its
+    resolution consults no web_sessions row at all (guests have none),
+    so there is nothing a logout could revoke
+    (tests/test_sessions_repo.py::test_guest_cookie_surviving_a_boundary_logout_still_authenticates)
+    — and an authenticated cookie naming a session this logout did not
+    revoke, as at the two-nonce rollout boundary, where logout revokes
+    the presented session and leaves the other live one in place
+    (tests/test_sessions_repo.py::test_two_nonce_rollout_boundary_logout_leaves_the_other_session_live).
+    The host-only deletion therefore cannot be made conditional on
+    anything the logout handler can observe. This rationale is
+    deliberately a sufficiency claim with witnesses; it does not
+    attempt a characterisation of the cases where a surviving cookie
+    stops authenticating.
     """
     domain = _session_cookie_domain()
     if domain is not None:

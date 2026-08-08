@@ -70,11 +70,23 @@ def _fake_user(monkeypatch):
     # resolve_session_user_id now checks the nonce against web_sessions;
     # with no real auth DB here, treat every nonce as active. The reject
     # path is covered against a real DB in test_sessions_repo.py.
+    #
+    # is_session_active must stay pinned at True even though /logout now
+    # revokes server-side: the logout tests below assert a post-logout 401
+    # specifically to prove a cookie-DELETION leg fired (header inspection
+    # cannot see a surviving cookie that still resolves). If revocation
+    # could also produce that 401, those tests would pass with a deletion
+    # leg removed and the dual-keying clearing would be untested. So
+    # revocation is stubbed to a no-op instead — the real revocation path
+    # is pinned against a real auth DB in test_sessions_repo.py.
     monkeypatch.setattr(
         sessions_repo, "is_session_active", lambda *args, **kwargs: True
     )
     monkeypatch.setattr(
         sessions_repo, "touch_session", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        sessions_repo, "revoke_session", lambda *args, **kwargs: True
     )
 
     # resolve_session_user_id opens one shared auth_conn() around the
@@ -179,6 +191,25 @@ def _session_cookie_morsels(resp) -> list[Morsel]:
 def _session_cookie_morsel(resp) -> Morsel:
     """The session-cookie Morsel from a response's Set-Cookie headers."""
     return _session_cookie_morsels(resp)[0]
+
+
+def _assert_both_deletion_legs(response):
+    """Both (name, domain, path) keyings must get a real DELETION header.
+
+    The full key is asserted, not just the domain half: the two legs must
+    differ on Domain= (one keyed to the shared domain, one host-only),
+    both must carry the same Path=/ the setter uses — a deletion keyed
+    (name, domain, /other-path) matches nothing the browser holds — and
+    both must actually DELETE (empty value, expiry in the past), not
+    re-issue a live cookie.
+    """
+    morsels = _session_cookie_morsels(response)
+    assert any(m["domain"] for m in morsels)
+    assert any(not m["domain"] for m in morsels)
+    for m in morsels:
+        assert m["path"] == "/"
+        assert m.value.strip('"') == ""
+        assert "1970" in m["expires"] or m["max-age"] == "0"
 
 
 def test_login_cookie_domain_contract(app, fake_user, monkeypatch):
@@ -289,10 +320,14 @@ def test_logout_clears_a_pre_rollout_host_only_cookie(app, fake_user, monkeypatc
     host-only session cookie; their next login after the rollout adds a
     domain-keyed one — a DIFFERENT (name, domain, path) key, so the jar
     holds both. A logout that clears only one keying leaves the other
-    alive and still authenticating (/logout does no server-side
-    revocation, so nothing else catches it). The post-logout request is
-    the assertion that matters: header inspection cannot see a surviving
-    cookie that still resolves.
+    alive and still authenticating. The post-logout request is the
+    assertion that matters: header inspection cannot see a surviving
+    cookie that still resolves. Now that /logout also revokes
+    server-side, the final 401 has a second possible cause — but not in
+    this test: the fake_user fixture stubs revoke_session to a no-op and
+    pins is_session_active at True, so here the 401 can still come from
+    the cookie path alone and keeps discriminating a dropped deletion
+    leg.
     """
     # Pre-rollout: no domain configured, login issues a host-only cookie.
     monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)
@@ -373,6 +408,120 @@ def test_guest_cookie_gets_no_domain(app, monkeypatch):
     assert r.status_code in (302, 303)
     morsel = _session_cookie_morsel(r)
     assert morsel["domain"] == ""
+
+
+def test_logout_fails_loudly_when_the_revocation_raises(
+    app, fake_user, monkeypatch
+):
+    """A logout that cannot revoke must not report success.
+
+    Clearing the cookie while the row survives is the exact defect the
+    revocation exists to remove: the user is told they signed out, the
+    local cookie is gone, and the token stays valid for every sibling
+    service with no cookie left to retry the revocation with. So the
+    revocation runs BEFORE the response is built, and its failure
+    propagates. Both assertions are load-bearing: the 500 kills the
+    swallow (a swallowed revocation returns the normal 303), and the
+    absent Set-Cookie pins that no cookie deletion is handed out
+    alongside the failure.
+    """
+    client = TestClient(app)
+    client.post(
+        "/login",
+        data={"user_id": "12345", "password": "hunter2"},
+        follow_redirects=False,
+    )
+    token = client.cookies.get(session_mod.SESSION_COOKIE_NAME)
+    assert token
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("auth DB unreachable")
+
+    monkeypatch.setattr(sessions_repo, "revoke_session", _boom)
+
+    # raise_server_exceptions=False so the server error surfaces as a
+    # response to assert on instead of propagating into the test.
+    quiet = TestClient(app, raise_server_exceptions=False)
+    quiet.cookies.set(session_mod.SESSION_COOKIE_NAME, token)
+    r = quiet.get("/logout", follow_redirects=False)
+    assert r.status_code == 500
+    assert "set-cookie" not in {k.lower() for k in r.headers}
+
+
+def test_guest_logout_never_touches_the_auth_db(app, monkeypatch):
+    """The guest exclusion must hold with the auth DB down — by assertion.
+
+    Guests have no web_sessions rows by design, so logout returns before
+    ANY auth-DB access for them, and a total auth-DB outage must not
+    break guest logout. Removing the exclusion makes the handler call
+    revoke_session, which reaches for the (here: raising) pool and the
+    logout 500s — without this test that mutant would be caught only by
+    an incidental PoolTimeout from a scratch auth DB that happened not
+    to exist, which is a crash, and one that depends on test ordering.
+
+    Status alone cannot pin the guest path: a no-op handler that skips
+    clear_session_cookie ALSO returns 303. The clearing assertions are
+    what fail there — under a no-op the jar still holds the live guest
+    cookie and the next request keeps authenticating.
+
+    Deliberate overlap: the domain-set half of this test re-covers
+    test_guest_logout_with_domain_set_rejects_the_next_request. Both are
+    kept — this one pins zero auth-DB access BY ASSERTION (the other
+    would catch a removed guest exclusion only via an incidental
+    PoolTimeout crash, dependent on test ordering), while that one runs
+    with no db.auth_conn monkeypatch at all, so it alone sees a
+    regression in the interplay between the guest path and the real
+    pool.
+    """
+    def _down():
+        raise RuntimeError("auth DB down")
+
+    monkeypatch.setattr(db, "auth_conn", _down)
+    # Domain set: also pins that guest logout clears BOTH keyings while
+    # the guest cookie itself is host-only by design.
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", "testserver.local")
+    client = TestClient(app, raise_server_exceptions=False)
+    client.post("/login/guest", follow_redirects=False)
+    # Precondition: the guest cookie really authenticates, or a later
+    # 401 proves nothing.
+    assert client.get("/api/me").status_code == 200
+    r = client.get("/logout", follow_redirects=False)
+    assert r.status_code == 303
+    # The guest path must still CLEAR the cookie — the assertions a bare
+    # 303-redirect handler fails.
+    _assert_both_deletion_legs(r)
+    assert not client.cookies.get(session_mod.SESSION_COOKIE_NAME)
+    assert client.get("/api/me").status_code == 401
+
+
+def test_logout_without_a_cookie_still_clears_both_keyings(app, monkeypatch):
+    """No cookie at all: the same 303 with both deletion legs, never a 500.
+
+    Nothing exercised this leg — an unguarded index into a None parse
+    result would 500 here while every existing logout test stayed green.
+    """
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", "example.test")
+    client = TestClient(app)
+    r = client.get("/logout", follow_redirects=False)
+    assert r.status_code == 303
+    _assert_both_deletion_legs(r)
+
+
+def test_logout_with_a_malformed_cookie_still_clears_both_keyings(
+    app, monkeypatch
+):
+    """A cookie that does not parse: the same 303 with both deletion legs.
+
+    parse_session_token returns None for garbage; the handler must skip
+    the revocation quietly and still clear, or a corrupted cookie would
+    make logout 500 — and nothing checked that.
+    """
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", "example.test")
+    client = TestClient(app)
+    client.cookies.set(session_mod.SESSION_COOKIE_NAME, "not.a.real.token")
+    r = client.get("/logout", follow_redirects=False)
+    assert r.status_code == 303
+    _assert_both_deletion_legs(r)
 
 
 def _helper_body_spans(src: str) -> list[tuple[int, int]]:
