@@ -52,9 +52,9 @@ _TEST_AUTH_DB = run_db_name("kimimeter_test_auth")
 # keep a test process off production even if some module (now or later)
 # imports backend.app at module scope.
 #
-# The ordering is load-bearing: this must run above any import that pulls in
-# a backend module. It is a backstop, not a replacement — DB-touching tests
-# still monkeypatch their own scratch database.
+# The ordering is load-bearing: this must run above any import of a backend
+# module that reads env at import time. It is a backstop, not a replacement —
+# DB-touching tests still monkeypatch their own scratch database.
 os.environ.setdefault("DATABASE_URL_VIZ", f"postgresql:///{run_db_name('kimimeter_test')}")
 # DATABASE_URL_AUTH gets the same guard: .env pins it at the live auth
 # database, and without this setdefault any test that touches auth outside
@@ -70,7 +70,24 @@ os.environ.setdefault("R2_SECRET_ACCESS_KEY", "")
 os.environ.setdefault("PARSER_VERSION", "test")
 os.environ.setdefault("ADMIN_TOKEN", "test-admin")
 # TestClient runs over plain HTTP — Secure-flag cookies would never come back.
-os.environ.setdefault("COOKIE_SECURE", "0")
+# A forced assignment, NOT a setdefault: as with the DATABASE_URL guards
+# above, a setdefault here would beat .env (conftest is imported before
+# backend.app's load_dotenv runs), but not a COOKIE_SECURE=1 exported in
+# the developer's or CI shell. A Secure cookie is never returned by the
+# test client's jar over plain http.
+os.environ["COOKIE_SECURE"] = "0"
+# SESSION_COOKIE_DOMAIN from .env (or the ambient environment) would make
+# the app issue domain-scoped cookies the test client's jar never returns
+# for the `testserver` host, failing auth tests for reasons unrelated to
+# any defect. Force it empty: backend/session.py maps "" to None, so
+# cookies stay host-only. A forced assignment, NOT a setdefault: a
+# setdefault would suffice against .env alone (same ordering argument as
+# the DATABASE_URL guards above), but an ambient exported value would
+# still win — measured: with setdefaults here, exporting
+# SESSION_COOKIE_DOMAIN=.example.invalid fails 10 tests. Tests that
+# exercise the rollout boundary monkeypatch the variable themselves and
+# are unaffected.
+os.environ["SESSION_COOKIE_DOMAIN"] = ""
 # No background cache warming under test: a warm queued by run_ingest
 # outlives the fixture that created its DB, and its queries then race the
 # teardown that drops it — producing failures in unrelated tests.
