@@ -88,6 +88,12 @@ os.environ["COOKIE_SECURE"] = "0"
 # exercise the rollout boundary monkeypatch the variable themselves and
 # are unaffected.
 os.environ["SESSION_COOKIE_DOMAIN"] = ""
+# GUEST_SESSION_SECRET gets the same forced-empty treatment: an ambient
+# exported value would change which secret signs guest tokens mid-suite,
+# failing guest tests for reasons unrelated to any defect.
+# backend/session.py maps ""/whitespace to the process-local fallback, so
+# guest behaviour under test is the unconfigured behaviour.
+os.environ["GUEST_SESSION_SECRET"] = ""
 # No background cache warming under test: a warm queued by run_ingest
 # outlives the fixture that created its DB, and its queries then race the
 # teardown that drops it — producing failures in unrelated tests.

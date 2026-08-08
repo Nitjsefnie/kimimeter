@@ -28,10 +28,26 @@ SESSION_COOKIE_MAX_AGE = 7 * 24 * 3600
 WEB_SESSION_SECRET_KEY = "web_session_secret"
 
 # Sentinel user_id reserved for unauthenticated guest sessions.
-# Tokens with this user_id are signed with a process-local secret
-# regenerated at startup, so guest cookies invalidate on restart.
+# Tokens with this user_id are signed with the GUEST_SESSION_SECRET env
+# value when it is set, or with a process-local fallback secret when it
+# is unset — in which case guest cookies invalidate on restart.
 GUEST_USER_ID = 0
-_GUEST_SECRET = secrets.token_urlsafe(32)
+_GUEST_SECRET_FALLBACK = secrets.token_urlsafe(32)
+
+
+def _guest_secret() -> str:
+    """Guest-token signing secret.
+
+    Set GUEST_SESSION_SECRET to keep guest sessions valid across
+    restarts. Without it a per-process fallback is used and every
+    restart signs out every guest.
+
+    The os.environ read is deliberately per-call, not hoisted into a
+    module constant: caching it at import time would re-couple signing
+    to process start (and break tests that set the variable after
+    import).
+    """
+    return os.environ.get("GUEST_SESSION_SECRET", "").strip() or _GUEST_SECRET_FALLBACK
 
 
 def parse_session_token(token: str):
@@ -129,7 +145,7 @@ def write_user_config(user_id: int, config: dict) -> None:
 
 
 def make_guest_session_token() -> str:
-    return make_session_token(GUEST_USER_ID, _GUEST_SECRET)
+    return make_session_token(GUEST_USER_ID, _guest_secret())
 
 
 def resolve_session_user_id(token: str) -> int | None:
@@ -138,7 +154,7 @@ def resolve_session_user_id(token: str) -> int | None:
         return None
     user_id = parsed[0]
     if user_id == GUEST_USER_ID:
-        return verify_session_token(token, _GUEST_SECRET)
+        return verify_session_token(token, _guest_secret())
     # Config and nonce state resolve on ONE shared auth-DB connection —
     # the auth pool is max_size=4, and per-request checkouts must not
     # grow beyond the pre-change single load_user_config acquisition

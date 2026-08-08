@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from unittest.mock import patch
 
@@ -226,7 +227,9 @@ def test_whitespace_only_session_secret_is_treated_as_absent(auth_db):
     # string would sign with "" instead of the stored bytes. Dropping
     # .strip() from _stored_session_secret would adopt " \t\n " as the
     # signing secret and GRANT the forged token — same failure class as
-    # the str(None) coercion.
+    # the str(None) coercion. (The guest side's blank-env test is
+    # test_guest_secret_falls_back_on_blank_env; this closes
+    # the asymmetry on the user side.)
     uid = 4322
     stored = " \t\n "
     with db.auth_conn() as c:
@@ -264,3 +267,42 @@ def test_guest_session_resolves_without_a_web_session_row(auth_db, monkeypatch):
 
     monkeypatch.setattr(db, "auth_conn", _down)
     assert session.resolve_session_user_id(cookie) == session.GUEST_USER_ID
+
+
+def test_guest_secret_comes_from_env_when_set(monkeypatch):
+    monkeypatch.setenv("GUEST_SESSION_SECRET", "a-fixed-guest-secret-value")
+    assert session._guest_secret() == "a-fixed-guest-secret-value"  # pylint: disable=protected-access
+
+
+def test_guest_secret_falls_back_to_process_local_when_unset(monkeypatch):
+    monkeypatch.delenv("GUEST_SESSION_SECRET", raising=False)
+    assert session._guest_secret() == session._GUEST_SECRET_FALLBACK  # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize("value", ["", "   "], ids=["empty", "whitespace"])
+def test_guest_secret_falls_back_on_blank_env(monkeypatch, value):
+    # A blank variable must not become a blank signing key.
+    monkeypatch.setenv("GUEST_SESSION_SECRET", value)
+    assert session._guest_secret() == session._GUEST_SECRET_FALLBACK  # pylint: disable=protected-access
+
+
+def test_guest_token_is_signed_with_the_env_secret(monkeypatch):
+    monkeypatch.setenv("GUEST_SESSION_SECRET", "a-fixed-guest-secret-value")
+    token = session.make_guest_session_token()
+    # Public surface: the token verifies under the configured secret, so the
+    # env value — not the process-local fallback — is the signing key.
+    assert session.verify_session_token(token, "a-fixed-guest-secret-value") == session.GUEST_USER_ID
+    # Simulate the restart: a new process draws a new fallback.
+    monkeypatch.setattr(session, "_GUEST_SECRET_FALLBACK", secrets.token_urlsafe(32))
+    assert session.resolve_session_user_id(token) == session.GUEST_USER_ID
+
+
+def test_guest_token_does_not_survive_a_restart_without_env_secret(monkeypatch):
+    # The negative half of the test above: with GUEST_SESSION_SECRET unset
+    # the signing key is the process-local fallback, so a restart — a new
+    # fallback draw — must invalidate every outstanding guest token.
+    monkeypatch.delenv("GUEST_SESSION_SECRET", raising=False)
+    token = session.make_guest_session_token()
+    assert session.resolve_session_user_id(token) == session.GUEST_USER_ID
+    monkeypatch.setattr(session, "_GUEST_SECRET_FALLBACK", secrets.token_urlsafe(32))
+    assert session.resolve_session_user_id(token) is None
