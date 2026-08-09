@@ -11,17 +11,6 @@ window.generateSyntheticData = function () {
   const events = [];
   const limitHits = [];
 
-  // Pricing per model (USD per token)
-  const PRICING = {
-    'opus-4-7':   { in: 5/1e6, out: 25/1e6, cc: 6.25/1e6, cr: 0.5/1e6 },
-    'opus-4-6':   { in: 5/1e6, out: 25/1e6, cc: 6.25/1e6, cr: 0.5/1e6 },
-    'opus-4-5':   { in: 5/1e6, out: 25/1e6, cc: 6.25/1e6, cr: 0.5/1e6 },
-    'sonnet-4-6': { in: 3/1e6, out: 15/1e6, cc: 3.75/1e6, cr: 0.3/1e6 },
-    'sonnet-4-5': { in: 3/1e6, out: 15/1e6, cc: 3.75/1e6, cr: 0.3/1e6 },
-    'haiku-4-5':  { in: 1/1e6, out: 5/1e6,  cc: 1.25/1e6, cr: 0.1/1e6 },
-    '<synthetic>':{ in: 0, out: 0, cc: 0, cr: 0 },
-  };
-
   // Session-level intensity ramp. Volume grows roughly exponentially.
   function intensity(t) {
     const frac = (t - start) / (end - start); // 0..1
@@ -59,16 +48,16 @@ window.generateSyntheticData = function () {
     const durMin = (5 + rng() * 90) * (0.5 + I);
     const reqs = Math.max(3, Math.floor((10 + rng() * 80) * I));
 
-    // Model choice: shifts over time. Late period is opus-heavy.
+    // Model choice shifts from K2.6 toward K2.7 Code and K3 over time.
     const frac = (sessStart - start) / (end - start);
     let model;
     const r = rng();
     if (frac < 0.3) {
-      model = r < 0.5 ? 'opus-4-6' : r < 0.7 ? 'sonnet-4-5' : 'haiku-4-5';
+      model = r < 0.8 ? 'kimi-k2-6' : 'kimi-k2-7-code';
     } else if (frac < 0.7) {
-      model = r < 0.65 ? 'opus-4-6' : r < 0.85 ? 'opus-4-7' : 'haiku-4-5';
+      model = r < 0.35 ? 'kimi-k2-6' : r < 0.9 ? 'kimi-k2-7-code' : 'kimi-k3';
     } else {
-      model = r < 0.5 ? 'opus-4-7' : r < 0.85 ? 'opus-4-6' : r < 0.92 ? 'haiku-4-5' : '<synthetic>';
+      model = r < 0.55 ? 'kimi-k3' : r < 0.85 ? 'kimi-k2-7-code' : r < 0.92 ? 'kimi-k2-6' : '<synthetic>';
     }
 
     for (let i = 0; i < reqs; i++) {
@@ -81,8 +70,13 @@ window.generateSyntheticData = function () {
       const outputT = Math.floor((300 + rng() * 1500) * ramp);
       const crT     = Math.floor((20000 + rng() * 120000) * ramp * (1 + frac * 4));
 
-      const p = PRICING[model] || PRICING['opus-4-6'];
-      const cost = inputT * p.in + outputT * p.out + crT * p.cr;
+      let cost = 0;
+      if (model !== '<synthetic>') {
+        const rates = window.rateForModel(model);
+        cost = (
+          inputT * rates.fresh + outputT * rates.output + crT * rates.read
+        ) / 1e6;
+      }
 
       events.push({
         ts,
