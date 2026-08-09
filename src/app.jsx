@@ -438,6 +438,16 @@ function ProjectPicker({ projects, active, onChange }) {
 // are mapped to one synthetic "event" per hour bucket so the dashboard
 // panels render correctly. Per-turn detail is loaded separately via the
 // Inspector when a user opens a session.
+function backendAggregateRange(events, bucketS) {
+  const first = events[0].ts;
+  const last = events[events.length - 1].ts;
+  const bucketMs = Number(bucketS) * 1000;
+  if (Number.isFinite(bucketMs) && bucketMs > 0) {
+    return { start: first - bucketMs / 2, end: last + bucketMs / 2 };
+  }
+  return { start: first, end: last + 1 };
+}
+
 function backendDashToShape(b) {
   // Canonicalize raw backend model strings once, so every downstream
   // consumer (model colors, Cost by Model labels, burn-rate dots) agrees.
@@ -500,14 +510,9 @@ function backendDashToShape(b) {
       // is what the burn-rate dot scaling actually needs.
     };
   });
-  const start = events[0].ts;
-  // +1ms so the bin loop's strict `events[ci].ts < bEnd` includes the
-  // last event (its ts == range.end otherwise gets dropped, dropping
-  // ~1 bucket from the cumulative line and creating the $14.2K vs
-  // $15K mismatch with the summary stat).
-  const end = events[events.length - 1].ts + 1;
+  const range = backendAggregateRange(events, b.bucket_s);
   return {
-    events, limitHits, range: { start, end }, costByModel,
+    events, limitHits, range, costByModel,
     costByProject: b.cost_by_project || [],
     churnEvents,
     sessionsOverride: sessions,
