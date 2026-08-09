@@ -1,18 +1,20 @@
-"""Behavioral coverage for the no-backend dashboard preview (issue #22).
+"""Behavioral coverage for the no-backend dashboard preview (#22 and #23).
 
 The preview must emit the same canonical models kimimeter ingests and price
-them through parser.js's shared resolver. The deterministic generator is run
-through Node so these tests cover the shipped JavaScript rather than a Python
-reimplementation.
+them through parser.js's shared resolver at timestamps where the backend would
+assign those models. The deterministic generator is run through Node so these
+tests cover the shipped JavaScript rather than a Python reimplementation.
 """
 import json
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from backend import pricing
+from backend.parse import K3_CUTOFF_EPOCH, MODEL_CUTOFF_EPOCH, _model_for
 
 ROOT = Path(__file__).resolve().parents[1]
 PARSER_JS = ROOT / "src" / "parser.js"
@@ -58,6 +60,11 @@ def _node_probe():
 
       console.log(JSON.stringify({{
         generated, representatives, markerZeroCost, usesInjectedRates,
+        range: data.range,
+        assignments: data.events.map((event) => ({{
+          ts: event.ts,
+          model: event.model,
+        }})),
       }}));
     """
     proc = subprocess.run(
@@ -94,3 +101,22 @@ def test_preview_costs_match_backend_pricing(js):
 
 def test_preview_uses_the_shared_rate_resolver(js):
     assert js["usesInjectedRates"]
+
+
+def test_preview_models_follow_backend_timestamp_cutoffs(js):
+    start_epoch = js["range"]["start"] / 1000
+    end_epoch = js["range"]["end"] / 1000
+    assert start_epoch < MODEL_CUTOFF_EPOCH < K3_CUTOFF_EPOCH < end_epoch
+
+    mismatches = []
+    for event in js["assignments"]:
+        if event["model"] == "<synthetic>":
+            continue
+        timestamp = datetime.fromtimestamp(
+            event["ts"] / 1000, tz=timezone.utc
+        )
+        expected = _model_for(None, timestamp)
+        if event["model"] != expected:
+            mismatches.append((timestamp.isoformat(), event["model"], expected))
+
+    assert not mismatches, mismatches[:5]

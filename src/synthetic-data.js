@@ -1,13 +1,13 @@
 // Synthetic usage_events generator. Mirrors the shape of what the
 // Postgres `usage_events` table would yield: one row per assistant
 // API call. Designed to look like the reference graph: a slow ramp
-// from Feb -> Apr, a steep climb in late Apr / early May, with two
+// from May -> Jul, a steep climb in late Jul / early Aug, with two
 // rate-limit hits near the right edge.
 
 window.generateSyntheticData = function () {
   const MS = 1000, MIN = 60 * MS, HOUR = 60 * MIN, DAY = 24 * HOUR;
-  const start = Date.UTC(2026, 1, 5, 12, 20); // Feb 5
-  const end   = Date.UTC(2026, 4, 6, 3, 8);   // May 6
+  const start = Date.UTC(2026, 4, 8, 12, 20); // May 8
+  const end   = Date.UTC(2026, 7, 6, 3, 8);   // Aug 6
   const events = [];
   const limitHits = [];
 
@@ -48,21 +48,19 @@ window.generateSyntheticData = function () {
     const durMin = (5 + rng() * 90) * (0.5 + I);
     const reqs = Math.max(3, Math.floor((10 + rng() * 80) * I));
 
-    // Model choice shifts from K2.6 toward K2.7 Code and K3 over time.
     const frac = (sessStart - start) / (end - start);
-    let model;
-    const r = rng();
-    if (frac < 0.3) {
-      model = r < 0.8 ? 'kimi-k2-6' : 'kimi-k2-7-code';
-    } else if (frac < 0.7) {
-      model = r < 0.35 ? 'kimi-k2-6' : r < 0.9 ? 'kimi-k2-7-code' : 'kimi-k3';
-    } else {
-      model = r < 0.55 ? 'kimi-k3' : r < 0.85 ? 'kimi-k2-7-code' : r < 0.92 ? 'kimi-k2-6' : '<synthetic>';
-    }
+    // Preserve the late zero-cost marker and one RNG draw per session.
+    const markerRoll = rng();
+    const syntheticSession = frac >= 0.7 && markerRoll >= 0.92;
 
     for (let i = 0; i < reqs; i++) {
       const ts = sessStart + (i / reqs) * durMin * MIN + (rng() - 0.5) * 30 * MS;
       if (ts > end) break;
+      // Mirror parser.js's per-record date ladder instead of maintaining a
+      // second set of model phases that can drift from the real cutoffs.
+      const model = syntheticSession
+        ? '<synthetic>'
+        : modelFor(null, ts / 1000);
 
       // Token shape — cache_read dominates by orders of magnitude
       const ramp = 0.3 + I * 1.5;
