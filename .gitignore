@@ -40,3 +40,4 @@ scripts/discord_mb.py
 
 # never commit: the secrecy-check literal list
 .secrecy-literals
+.env.bak-*
