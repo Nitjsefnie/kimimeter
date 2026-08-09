@@ -685,6 +685,31 @@ function projectDisplayLabel(projectId, nameByProject) {
   return (nameByProject && nameByProject[projectId]) || projectId;
 }
 
+// Choose the display grain from the visible data span, but never split a
+// pre-aggregated backend bucket across finer visual bins. Offline data has no
+// bucketS metadata and keeps the original data-span behavior.
+function dashboardBinMs(range, bucketS) {
+  const span = range.end - range.start;
+  const MIN_BINS = 100;
+  const MAX_BIN_MS = 24 * 3600 * 1000; // 1 day
+  const niceBins = [
+    60_000, 5*60_000, 15*60_000, 30*60_000,
+    3600_000, 6*3600_000, 12*3600_000, 24*3600_000,
+  ];
+  let binMs = niceBins[0];
+  for (const b of niceBins) {
+    if (b > MAX_BIN_MS) break;
+    if (span / b < MIN_BINS) break;
+    binMs = b;
+  }
+
+  const serverBinMs = Number(bucketS) * 1000;
+  if (Number.isFinite(serverBinMs) && serverBinMs > 0) {
+    binMs = Math.max(binMs, serverBinMs);
+  }
+  return binMs;
+}
+
 function Dashboard({ synth, models, backendOn, activeProject, activeRange, dashNonce, projects }) {
   // `synth` is null until /api/dashboard lands. Render anyway: the four
   // backend panels below (Tool Usage, Reply Latency, Tool Error Rate,
@@ -733,19 +758,7 @@ function Dashboard({ synth, models, backendOn, activeProject, activeRange, dashN
     return t;
   }, [churnEvents]);
 
-  // Auto-pick bin size: at least 100 buckets, never coarser than 1 day.
-  // Pick the LARGEST nice-bin in [60s, 1d] that still produces ≥100 bins
-  // across the visible range; if even 60s overshoots, that's fine.
-  const span = range.end - range.start;
-  const MIN_BINS = 100;
-  const MAX_BIN_MS = 24 * 3600 * 1000; // 1 day
-  const niceBins = [60_000, 5*60_000, 15*60_000, 30*60_000, 3600_000, 6*3600_000, 12*3600_000, 24*3600_000];
-  let binMs = niceBins[0];
-  for (const b of niceBins) {
-    if (b > MAX_BIN_MS) break;
-    if (span / b < MIN_BINS) break;
-    binMs = b;
-  }
+  const binMs = dashboardBinMs(range, bucketS);
 
   const costByModel = Object.entries(totals.byModel)
     .filter(([, v]) => v > 0)
