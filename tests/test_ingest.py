@@ -818,4 +818,4 @@ def test_skips_alone_do_not_broadcast_ingest_done(fresh_db, mini_r2_env):
                    lambda *a, **k: sent.append(a))
         second = ingest.run_ingest(trigger="manual")
     assert second["skipped"] == 1
-    assert sent == []
+    assert not sent, sent
