@@ -664,3 +664,50 @@ def test_line_count_conventions():
     assert _line_count("a\n") == 1
     assert _line_count("a\nb") == 2
     assert _line_count("a\nb\n") == 2
+
+
+# --- Claude Code transcripts ------------------------------------------------
+#
+# A Claude Code session reaches the Kimi bucket whenever claude-code-proxy
+# routes one through Kimi: archive_sessions.py picks the bucket from the
+# provider marker in the transcript, so the bytes are Claude's, not Kimi's.
+# There is no parser for them yet; what matters is that the attempt is loud
+# rather than a silent empty parse, which the ingest would persist as a
+# `files` row stamped with the current parser_version — i.e. marked parsed.
+
+_CLAUDE_FIX = FIX / "claude_transcript.jsonl"
+
+
+def test_claude_transcript_raises_instead_of_parsing_empty():
+    with pytest.raises(parse.UnsupportedTranscriptError) as e:
+        parse.parse_file(
+            "sessions/projA/sess-A/wire.jsonl", _CLAUDE_FIX.read_bytes()
+        )
+    assert "sessions/projA/sess-A/wire.jsonl" in str(e.value)
+
+
+def test_claude_detection_survives_a_leading_unrecognized_line():
+    """Detection scans until a line identifies the format, so a sidecar
+    record Claude Code adds in some future version cannot make the file
+    fall through to the legacy parser and come back empty."""
+    blob = (b'{"type":"some-future-record","payload":{}}\n'
+            + _CLAUDE_FIX.read_bytes())
+    with pytest.raises(parse.UnsupportedTranscriptError):
+        parse.parse_file("sessions/p/s/wire.jsonl", blob)
+
+
+def test_file_history_lines_are_claude_even_without_a_session_id():
+    """The two file-history record types carry no sessionId; their names
+    carry the identification instead."""
+    blob = b'{"type":"file-history-delta","messageId":"m1","delta":{}}\n'
+    with pytest.raises(parse.UnsupportedTranscriptError):
+        parse.parse_file("sessions/p/s/wire.jsonl", blob)
+
+
+@pytest.mark.parametrize("name", [
+    "single_turn.jsonl", "tool_error.jsonl", "line_churn_kimi_code.jsonl",
+])
+def test_kimi_fixtures_are_not_mistaken_for_claude(name):
+    """The guard must not fire on the formats we do parse."""
+    out = parse.parse_file("sessions/p/s/wire.jsonl", _read(name))
+    assert isinstance(out["records"], list)

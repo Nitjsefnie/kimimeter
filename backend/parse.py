@@ -678,10 +678,46 @@ def _parse_kimi_code(file_key: str, blob: bytes) -> dict:
     return _finish_parse(st, len(blob.splitlines()))
 
 
+class UnsupportedTranscriptError(Exception):
+    """A transcript this parser recognises but does not handle yet.
+
+    Raised instead of returning an empty parse. An empty parse looks like a
+    success to the ingest, which persists it as a `files` row stamped with
+    the current parser_version — that marks the transcript PARSED, so no
+    later run revisits it until PARSER_VERSION is bumped. Raising keeps the
+    object unrecorded, so support landing later picks it up on its own.
+    """
+
+
+# Claude Code writes ~/.claude/projects/<slug>/<uuid>.jsonl, and every line it
+# emits — conversation turns as well as the sidecar bookkeeping records it
+# interleaves into the same file — carries the session id under `sessionId`.
+# Neither Kimi format nor the Codex rollout format has any such field
+# (verified against production objects in both buckets: zero occurrences), so
+# its presence alone identifies the format, and it keeps identifying it as
+# Claude Code adds line types.
+#
+# The two exceptions are file-history records, which carry no sessionId; their
+# type names are distinctive enough to match on their own.
+_CLAUDE_UNKEYED_TYPES = frozenset({
+    "file-history-snapshot", "file-history-delta",
+})
+
+
+def _is_claude_line(obj: dict) -> bool:
+    """Is this one line of a Claude Code transcript?"""
+    if obj.get("type") in _CLAUDE_UNKEYED_TYPES:
+        return True
+    return isinstance(obj.get("sessionId"), str)
+
+
 def parse_file(file_key: str, blob: bytes) -> dict:
     """Parse one wire.jsonl. Returns {records, ctx_turns, turn_count, rate_limit_hits, tool_uses}.
 
-    Auto-detects legacy kimi-cli format vs new kimi-code format per file.
+    Auto-detects legacy kimi-cli format vs new kimi-code format per file,
+    and raises UnsupportedTranscriptError for a Claude Code transcript —
+    which reaches this bucket whenever claude-code-proxy routes a Claude
+    Code session through Kimi.
     records: list of dicts with keys
       file_key, line_num, uuid, ts, model,
       fresh_tokens, cache_creation_tokens, cache_read_tokens,
@@ -717,7 +753,16 @@ def parse_file(file_key: str, blob: bytes) -> dict:
         }:
             fmt = "legacy"
             break
+        # Last rung on purpose: a line that somehow carried both a Kimi
+        # marker and a sessionId belongs to the format we can parse.
+        if _is_claude_line(obj):
+            fmt = "claude"
+            break
 
+    if fmt == "claude":
+        raise UnsupportedTranscriptError(
+            f"{file_key}: Claude Code transcript, no parser yet"
+        )
     if fmt == "kimi-code":
         return _parse_kimi_code(file_key, blob)
     return _parse_legacy(file_key, blob)

@@ -106,7 +106,7 @@ def health() -> dict:
         with db.viz_conn() as c:
             row = c.execute(
                 "SELECT id, started_at, finished_at, trigger, "
-                "r2_listed, reparsed, error "
+                "r2_listed, reparsed, error, skipped "
                 "FROM ingest_runs ORDER BY id DESC LIMIT 1"
             ).fetchone()
             if row:
@@ -118,6 +118,11 @@ def health() -> dict:
                     "r2_listed": row[4],
                     "reparsed": row[5],
                     "error": row[6],
+                    # Transcripts seen and deliberately not ingested (a
+                    # foreign key layout, or a format with no parser yet).
+                    # Not an error — a run of N skips and no failures is
+                    # healthy.
+                    "skipped": row[7],
                 }
     except Exception as e:  # noqa: BLE001
         return {

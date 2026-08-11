@@ -98,8 +98,34 @@ def _existing_files() -> dict:
         }
 
 
-def _scan_r2() -> tuple[list, list[tuple[str, str]]]:
-    """Walk R2 once: (wire.jsonl objects, project.json marker items).
+def _is_foreign_transcript_key(parts: list[str]) -> bool:
+    """A transcript written by another harness, in that harness's layout.
+
+    Claude Code sessions land in this bucket whenever claude-code-proxy
+    routes one through Kimi: archive_sessions.py picks the bucket from the
+    provider marker stamped into the transcript but keeps Claude's own key
+    layout, `<project-slug>/<uuid>/<uuid>.jsonl`, with subagent transcripts
+    under `<uuid>/data/`. None of that is `sessions/`-prefixed, so it never
+    reaches the parser — counting it is what makes the skip a deliberate,
+    reportable decision instead of an invisible one.
+
+    The depth floor keeps flat bucket-root objects (`user-history/*.jsonl`)
+    out of the count: those are not session transcripts.
+    """
+    return (parts[0] != "sessions" and len(parts) >= 3
+            and parts[-1].endswith((".jsonl", ".jsonl.xz")))
+
+
+class _Scan(NamedTuple):
+    """What one walk of the bucket found."""
+    wire_objs: list
+    marker_items: list[tuple[str, str]]
+    # Transcripts in another harness's layout; counted, never fetched.
+    foreign: int
+
+
+def _scan_r2() -> _Scan:
+    """Walk R2 once: wire.jsonl objects, project.json markers, foreign count.
 
     The marker is published by archive_sessions.py on the originating box
     and carries the path the session was run from — we use it as the
@@ -107,6 +133,7 @@ def _scan_r2() -> tuple[list, list[tuple[str, str]]]:
     """
     wire_objs: list = []
     marker_items: list[tuple[str, str]] = []
+    foreign = 0
     for obj in r2.list_keys():
         parts = obj.key.split("/")
         if len(parts) >= 4 and parts[0] == "sessions" \
@@ -115,7 +142,9 @@ def _scan_r2() -> tuple[list, list[tuple[str, str]]]:
         elif len(parts) == 3 and parts[0] == "sessions" \
                 and parts[2] == "project.json":
             marker_items.append((parts[1], obj.key))
-    return wire_objs, marker_items
+        elif _is_foreign_transcript_key(parts):
+            foreign += 1
+    return _Scan(wire_objs, marker_items, foreign)
 
 
 def _resolve_project_paths(marker_items: list[tuple[str, str]],
@@ -199,8 +228,17 @@ def _persist_one(item: tuple, parsed: dict | None, exc: BaseException | None,
                  failed: list[tuple[str, str]], parser_version: str
                  ) -> str | None:
     """Persist one fetched+parsed file; book the failure instead when the
-    fetch raised. Returns "inserted"/"reparsed"/None for the counters."""
+    fetch raised. Returns "inserted"/"reparsed"/"skipped"/None for the
+    counters."""
     obj, proj, project_id, session_id, is_main, stored = item
+    if isinstance(exc, parse.UnsupportedTranscriptError):
+        # Deliberately NOT booked in `failed`: nothing is wrong and no
+        # retry would help, so reporting it as a run error would make
+        # every run report one forever. Returning before _persist is the
+        # point — no `files` row means the object is not marked parsed,
+        # so the run that first understands the format ingests it.
+        log.info("ingest: %s skipped: %s", obj.key, exc)
+        return "skipped"
     if exc is not None:
         _record_failure(failed, obj.key, exc)
         return None
@@ -211,7 +249,7 @@ def _persist_one(item: tuple, parsed: dict | None, exc: BaseException | None,
 
 
 def _fetch_and_persist(todo: list[tuple], workers: int, parser_version: str,
-                       failed: list[tuple[str, str]]) -> tuple[int, int]:
+                       failed: list[tuple[str, str]]) -> tuple[int, int, int]:
     """Fetch + parse is ~88% of per-file wall time and is network-bound
     (one R2 GET each), so it runs on a thread pool. Persistence stays
     on this thread: the per-file transaction boundary, and therefore
@@ -220,6 +258,7 @@ def _fetch_and_persist(todo: list[tuple], workers: int, parser_version: str,
     every inflated blob in memory at once."""
     inserted = 0
     reparsed = 0
+    skipped = 0
     chunk = max(1, workers * 4)
     for start in range(0, len(todo), chunk):
         batch = todo[start:start + chunk]
@@ -231,7 +270,9 @@ def _fetch_and_persist(todo: list[tuple], workers: int, parser_version: str,
                 inserted += 1
             elif outcome == "reparsed":
                 reparsed += 1
-    return inserted, reparsed
+            elif outcome == "skipped":
+                skipped += 1
+    return inserted, reparsed, skipped
 
 
 def _upsert_projects(seen_projects: dict[str, dict]) -> None:
@@ -272,39 +313,64 @@ def _delete_orphans(seen_keys: set[str]) -> int:
     return deleted
 
 
+class _Counts(NamedTuple):
+    """What one run did. Zeros when the run died before doing anything.
+
+    `skipped` is deliberately outside run_ingest's data-changed test:
+    skipping the same foreign transcripts every hour changes nothing, and
+    broadcasting ingest_done for it would make every idle run wake every
+    connected dashboard.
+    """
+    listed: int = 0
+    inserted: int = 0
+    reparsed: int = 0
+    deleted: int = 0
+    skipped: int = 0
+
+    @property
+    def data_changed(self) -> bool:
+        return bool(self.inserted or self.reparsed or self.deleted)
+
+
 def _ingest_main(parser_version: str, failed: list[tuple[str, str]]
-                 ) -> tuple[int, int, int, int]:
-    """The whole R2->DB pass. Returns (listed, inserted, reparsed, deleted).
+                 ) -> _Counts:
+    """The whole R2->DB pass.
 
     Any exception propagates to run_ingest, which books it as the run's
     `fatal` and skips the post-passes.
     """
     existing = _existing_files()
-    wire_objs, marker_items = _scan_r2()
+    scan = _scan_r2()
     workers = _worker_count()
-    project_paths = _resolve_project_paths(marker_items, workers, failed)
-    plan = _plan_work(wire_objs, project_paths, existing, parser_version)
-    inserted, reparsed = _fetch_and_persist(
+    project_paths = _resolve_project_paths(scan.marker_items, workers, failed)
+    plan = _plan_work(scan.wire_objs, project_paths, existing, parser_version)
+    inserted, reparsed, skipped = _fetch_and_persist(
         plan.todo, workers, parser_version, failed
     )
     _upsert_projects(plan.seen_projects)
     deleted = _delete_orphans(plan.seen_keys)
-    return plan.listed, inserted, reparsed, deleted
+    # Both kinds of skip are the same fact — a transcript we saw and
+    # deliberately did not ingest — so they share one counter: the ones
+    # ruled out by key layout without a fetch, and the ones whose bytes
+    # turned out to be a format we cannot parse yet.
+    return _Counts(plan.listed, inserted, reparsed, deleted,
+                   scan.foreign + skipped)
 
 
 def _finish_run(run_id: int, started: datetime, trigger: str,
-                counts: tuple[int, int, int, int], fatal: str | None,
+                counts: _Counts, fatal: str | None,
                 failed: list[tuple[str, str]]) -> dict:
     """Book the run's outcome in ingest_runs and build the summary dict."""
-    listed, inserted, reparsed, deleted = counts
     # `error` reports BOTH kinds of trouble, but only `fatal` gates anything.
     err = fatal if fatal is not None else _failure_summary(failed)
     finished = datetime.now(timezone.utc)
     with db.viz_conn() as c, c.cursor() as cur:
         cur.execute(
             "UPDATE ingest_runs SET finished_at=%s, r2_listed=%s, "
-            "reparsed=%s, inserted=%s, deleted=%s, error=%s WHERE id=%s",
-            (finished, listed, reparsed, inserted, deleted, err, run_id),
+            "reparsed=%s, inserted=%s, deleted=%s, skipped=%s, error=%s "
+            "WHERE id=%s",
+            (finished, counts.listed, counts.reparsed, counts.inserted,
+             counts.deleted, counts.skipped, err, run_id),
         )
         c.commit()
     return {
@@ -312,10 +378,11 @@ def _finish_run(run_id: int, started: datetime, trigger: str,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "trigger": trigger,
-        "r2_listed": listed,
-        "inserted": inserted,
-        "reparsed": reparsed,
-        "deleted": deleted,
+        "r2_listed": counts.listed,
+        "inserted": counts.inserted,
+        "reparsed": counts.reparsed,
+        "deleted": counts.deleted,
+        "skipped": counts.skipped,
         "failed": len(failed),
         "error": err,
     }
@@ -326,8 +393,8 @@ def run_ingest(trigger: str) -> dict:
     parser_version = os.environ.get("PARSER_VERSION", "1")
     run_id = _begin_run(started, trigger)
 
-    # (listed, inserted, reparsed, deleted); zeros when the run died early.
-    counts = (0, 0, 0, 0)
+    # Zeros when the run died early.
+    counts = _Counts()
     # Per-object failures (key, message). Recorded in the run's `error`, but
     # deliberately NOT used to gate anything: one dropped connection out of
     # 1,464 files is a run with a retry pending, not a failed run.
@@ -362,7 +429,7 @@ def run_ingest(trigger: str) -> dict:
     # servable — the refetch returns the previous numbers instantly and the
     # fresh ones land via the background refresh. Threadsafe: ingest runs in
     # a scheduler thread.
-    if fatal is None and any(counts[1:]):
+    if fatal is None and counts.data_changed:
         cache.response_cache.invalidate()
         events.broadcast_threadsafe("ingest_done", summary)
 

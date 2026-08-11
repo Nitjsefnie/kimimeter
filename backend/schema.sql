@@ -217,3 +217,8 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
   deleted         INT,
   error           TEXT
 );
+
+-- Transcripts seen and deliberately not ingested: another harness's key
+-- layout, or bytes in a format this parser does not handle yet. Counted
+-- rather than persisted, so they are visible without being marked parsed.
+ALTER TABLE ingest_runs ADD COLUMN IF NOT EXISTS skipped INT;

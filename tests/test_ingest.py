@@ -730,3 +730,92 @@ def test_failure_summary_truncates_a_long_key_list():
     assert summary.endswith(", ... (+4 more)")
     assert summary.count("wire.jsonl") == ingest.FAILURE_KEYS_IN_SUMMARY
     assert _failure_summary([]) is None
+
+
+# --- Claude Code transcripts in the Kimi bucket -----------------------------
+#
+# claude-code-proxy lets a Claude Code session run against Kimi.
+# archive_sessions.py routes that session's transcript to the Kimi bucket by
+# the provider marker inside it, but uploads it under Claude's own key layout
+# (`<project-slug>/<uuid>/<uuid>.jsonl`). Both buckets already hold one.
+# There is no parser for the format yet; the ingest must survive it AND leave
+# it unrecorded, because a `files` row would stamp it with the current
+# parser_version and stop the run that finally understands it from looking.
+
+_CLAUDE_FIX = _REPO_ROOT / "fixtures/parser/claude_transcript.jsonl"
+
+
+def _put_claude(root: Path, key: str) -> None:
+    """Drop the Claude fixture into the mirror at `key`."""
+    dest = root / key
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_CLAUDE_FIX.read_bytes())
+
+
+def test_claude_transcript_in_claude_layout_is_skipped(fresh_db, mini_r2_env):
+    """The layout Claude's archiver actually uses: bucket root, not
+    `sessions/`. Never fetched, but counted, so its presence is visible."""
+    _put_claude(mini_r2_env, "-root-kimimeter/ses-1/ses-1.jsonl")
+    _put_claude(mini_r2_env, "-root-kimimeter/ses-1/data/subagents/a1.jsonl")
+    result = ingest.run_ingest(trigger="manual")
+    assert result["error"] is None
+    assert result["skipped"] == 2
+    # The Kimi files still ingest normally, and nothing Claude-shaped lands.
+    assert result["inserted"] == 5
+    with db.viz_conn() as c:
+        assert _scalar(c, "SELECT COUNT(*) FROM files") == 5
+        assert _scalar(
+            c, "SELECT COUNT(*) FROM files WHERE file_key LIKE '-root-%'"
+        ) == 0
+
+
+def test_claude_transcript_under_sessions_is_skipped_not_marked_parsed(
+        fresh_db, mini_r2_env):
+    """The belt-and-braces case: Claude bytes at a key that DOES match the
+    Kimi layout, so the parser is the only thing standing between them and
+    a `files` row. It must skip, not fail and not persist."""
+    key = "sessions/projA/sess-CLAUDE/wire.jsonl"
+    _put_claude(mini_r2_env, key)
+    result = ingest.run_ingest(trigger="manual")
+    assert result["error"] is None, result["error"]
+    assert result["failed"] == 0
+    assert result["skipped"] == 1
+    assert result["inserted"] == 5
+    with db.viz_conn() as c:
+        assert _scalar(
+            c, "SELECT COUNT(*) FROM files WHERE file_key = %s", (key,)
+        ) == 0
+
+
+def test_skipped_transcript_is_retried_on_every_later_run(
+        fresh_db, mini_r2_env):
+    """Not marked parsed means exactly this: the next run still sees it as
+    work, so the run that ships a parser ingests it with no backfill."""
+    key = "sessions/projA/sess-CLAUDE/wire.jsonl"
+    _put_claude(mini_r2_env, key)
+    ingest.run_ingest(trigger="manual")
+    second = ingest.run_ingest(trigger="manual")
+    assert second["skipped"] == 1
+    assert second["inserted"] == 0
+    assert second["reparsed"] == 0
+    with db.viz_conn() as c:
+        assert _scalar(
+            c, "SELECT COUNT(*) FROM files WHERE file_key = %s", (key,)
+        ) == 0
+        assert _scalar(
+            c, "SELECT skipped FROM ingest_runs ORDER BY id DESC LIMIT 1"
+        ) == 1
+
+
+def test_skips_alone_do_not_broadcast_ingest_done(fresh_db, mini_r2_env):
+    """A run whose only news is 'the same foreign transcripts are still
+    there' changed no data, so it must not wake every connected dashboard."""
+    _put_claude(mini_r2_env, "sessions/projA/sess-CLAUDE/wire.jsonl")
+    ingest.run_ingest(trigger="manual")  # first run does insert
+    sent = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ingest.events, "broadcast_threadsafe",
+                   lambda *a, **k: sent.append(a))
+        second = ingest.run_ingest(trigger="manual")
+    assert second["skipped"] == 1
+    assert sent == []

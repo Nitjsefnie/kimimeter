@@ -19,10 +19,18 @@
   - `parse.py` — wire.jsonl → records + ctx_turns. Mirrors
     the canonical `~/.kimi-code/scripts/parse_wire.py` for turn-based
     StatusUpdate extraction.
+    `parse_file` raises `UnsupportedTranscriptError` on a Claude Code
+    transcript rather than returning an empty parse, which the ingest would
+    persist as a successfully parsed file.
   - `pricing.py` — single source of truth for Kimi K2.6 / K2.7 Code / K3 rates.
     Bump `PARSER_VERSION` in `.env` whenever this changes.
   - `ingest.py` — R2 walk, etag/parser-version reparse decision, persistence
     in two-phase transactions, broadcasts `ingest_done` SSE on success.
+    Foreign transcripts — a Claude Code session that claude-code-proxy ran
+    through Kimi, so archive_sessions.py routed it to this
+    bucket under Claude's own key layout — are counted into the run's
+    `skipped` and never persisted. No `files` row means no parser_version
+    stamp, so the release that adds a parser ingests them with no backfill.
   - `r2.py` — S3 client with `file://` filesystem-mirror fallback for dev.
   - `auth.py`, `login.py`, `session.py` — PBKDF2 verification against the
     external auth DB's `users.config`, HMAC-signed session cookies, plus
