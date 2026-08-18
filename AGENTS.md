@@ -16,6 +16,8 @@
     (_DashQuery/_DashRows pipeline).
   - `api_sessions.py` — `/api/sessions*`, `/api/context-growth/{agg,session}`,
     split out of api.py.
+  - `bash_churn.py` — lines_added/lines_deleted recovered from Bash and
+    Shell command text; see the churn note under the schema below.
   - `parse.py` — wire.jsonl → records + ctx_turns. Mirrors
     the canonical `~/.kimi-code/scripts/parse_wire.py` for turn-based
     StatusUpdate extraction.
@@ -95,7 +97,12 @@
   - `tool_uses` / `tool_rollup` also carry `lines_added` / `lines_deleted`
     — edit churn derived at parse time from Edit/Write (kimi-code) and
     StrReplaceFile/WriteFile (legacy) call ARGS, because the wire's tool
-    results carry no diff. /api/dashboard serves them as the `churn`
+    results carry no diff. Bash and legacy Shell count too, via
+    `backend/bash_churn.py`, which reads what their command TEXT
+    enumerates directly — heredoc bodies redirected into a file, inline
+    git-apply/patch hunks, literal python replacements — and 0 for
+    anything that would have to be RUN to measure. They are the majority
+    of tool calls, so leaving them at zero hid most of the churn. /api/dashboard serves them as the `churn`
     series behind the Lines Added/Deleted panels. tool_uses has no model
     dimension, so `?model=` does not filter churn (same caveat as the
     tool endpoints).

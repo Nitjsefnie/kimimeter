@@ -1,0 +1,6 @@
+{"timestamp": "2026-06-14T12:00:00Z", "message": {"type": "TurnBegin", "payload": {}}}
+{"timestamp": "2026-06-14T12:00:01Z", "message": {"type": "ToolCall", "payload": {"type": "function", "id": "sh1", "function": {"name": "Shell", "arguments": "{\"command\": \"cat >> log.txt <<'EOF'\\none\\ntwo\\nEOF\\n\"}"}}}}
+{"timestamp": "2026-06-14T12:00:02Z", "message": {"type": "ToolResult", "payload": {"tool_call_id": "sh1", "return_value": {"is_error": false, "output": "ok"}}}}
+{"timestamp": "2026-06-14T12:00:03Z", "message": {"type": "ToolCall", "payload": {"type": "function", "id": "sh2", "function": {"name": "Shell", "arguments": "{\"command\": \"cat > x <<'EOF'\\nonly\\nEOF\\n\"}"}}}}
+{"timestamp": "2026-06-14T12:00:04Z", "message": {"type": "ToolResult", "payload": {"tool_call_id": "sh2", "return_value": {"is_error": true, "output": "denied"}}}}
+{"timestamp": "2026-06-14T12:00:05Z", "message": {"type": "StatusUpdate", "payload": {"message_id": "m1", "token_usage": {"input_other": 100, "input_cache_creation": 0, "input_cache_read": 0, "output": 50}}}}

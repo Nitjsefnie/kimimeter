@@ -622,7 +622,7 @@ def test_kimi_code_edit_write_churn_from_call_args():
         ("Edit", False, 4, 3),     # "a\nb\nc" -> "a\nB\nc\nd"
         ("Write", False, 2, 0),    # content "x\ny\n"; overwrite size unknowable
         ("Edit", True, 0, 0),      # is_error -> the rejected edit changed nothing
-        ("Bash", False, 0, 0),     # not a file-mutating tool
+        ("Bash", False, 0, 0),     # "ls" enumerates nothing
     ]
 
 
@@ -711,3 +711,28 @@ def test_kimi_fixtures_are_not_mistaken_for_claude(name):
     """The guard must not fire on the formats we do parse."""
     out = parse.parse_file("sessions/p/s/wire.jsonl", _read(name))
     assert isinstance(out["records"], list)
+
+
+def test_kimi_code_bash_heredoc_churn():
+    """Most editing goes through the shell, not Edit/Write: a heredoc
+    redirected into a file is a write, counted from the command text.
+    A command with nothing enumerable in it stays at 0/0."""
+    out = parse.parse_file(
+        "sessions/projBC/sess-bc/wire.jsonl", _read("bash_churn_kimi_code.jsonl")
+    )
+    assert _churn_by_tool(out) == [
+        ("Bash", False, 3, 0),
+        ("Bash", False, 0, 0),
+    ]
+
+
+def test_legacy_shell_heredoc_churn():
+    """The legacy Shell tool carries the same {command: ...} payload as
+    Bash, so it counts the same way — and an errored call is zeroed."""
+    out = parse.parse_file(
+        "sessions/projBC/sess-bcl/wire.jsonl", _read("bash_churn_legacy.jsonl")
+    )
+    assert _churn_by_tool(out) == [
+        ("Shell", False, 2, 0),
+        ("Shell", True, 0, 0),
+    ]

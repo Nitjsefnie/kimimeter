@@ -1,0 +1,8 @@
+{"type":"metadata","protocol_version":"1.4","created_at":1783000000000}
+{"type":"turn.prompt","time":1783000001000,"input":[{"type":"text","text":"write notes"}],"origin":{"kind":"user"}}
+{"type":"context.append_loop_event","time":1783000002000,"event":{"type":"step.begin","uuid":"step-1","turnId":"t1","step":1}}
+{"type":"context.append_loop_event","time":1783000003000,"event":{"type":"tool.call","uuid":"tc-1","turnId":"t1","step":1,"stepUuid":"step-1","toolCallId":"call-hd","name":"Bash","args":{"command":"cat > notes.md <<'EOF'\nalpha\nbeta\ngamma\nEOF\n"}}}
+{"type":"context.append_loop_event","time":1783000004000,"event":{"type":"tool.result","uuid":"tr-1","turnId":"t1","step":1,"stepUuid":"step-1","toolCallId":"call-hd","result":{"isError":false,"output":"ok"}}}
+{"type":"context.append_loop_event","time":1783000005000,"event":{"type":"tool.call","uuid":"tc-2","turnId":"t1","step":1,"stepUuid":"step-1","toolCallId":"call-ls","name":"Bash","args":{"command":"ls -la"}}}
+{"type":"context.append_loop_event","time":1783000006000,"event":{"type":"tool.result","uuid":"tr-2","turnId":"t1","step":1,"stepUuid":"step-1","toolCallId":"call-ls","result":{"isError":false,"output":"ok"}}}
+{"type":"usage","time":1783000007000,"model":"kimi-k2-7-code","usageScope":"turn","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}

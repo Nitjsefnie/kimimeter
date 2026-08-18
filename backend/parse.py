@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import orjson
 
 from backend import pricing
+from backend.bash_churn import bash_churn
 
 # Model attribution, oldest first. Each constant is a frozen UTC epoch, NOT a
 # live expression.
@@ -212,8 +213,14 @@ def _edit_churn(tool_name: str, args: dict) -> tuple[int, int]:
 
     A Write's deleted count is unknowable — the args carry only the new
     content, not what was overwritten — so Writes contribute added lines
-    only (append mode and fresh files are the common case anyway). Every
-    other tool returns (0, 0).
+    only (append mode and fresh files are the common case anyway).
+
+    Bash and its legacy Shell spelling carry a plain {command: "..."}
+    and route into backend.bash_churn, which recovers what the command
+    TEXT enumerates: heredoc bodies written to a file, inline patch
+    hunks, literal python replacements. They are 29,668 calls against
+    10,734 edit/write ones, so leaving them at zero hid most of the
+    churn. Every other tool returns (0, 0).
 
     The counts describe the ATTEMPT: a call whose result is an error
     changed nothing, and _resolve_tool_errors zeroes its churn once the
@@ -226,6 +233,8 @@ def _edit_churn(tool_name: str, args: dict) -> tuple[int, int]:
         )
     if tool_name in ("Write", "WriteFile"):
         return (_line_count(args.get("content")), 0)
+    if tool_name in ("Bash", "Shell"):
+        return bash_churn(str(args.get("command") or ""))
     if tool_name == "StrReplaceFile":
         edit = args.get("edit")
         edits = edit if isinstance(edit, list) else [edit]
