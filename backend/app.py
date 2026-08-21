@@ -16,7 +16,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, Response
 
-from backend import api, api_dashboard, api_sessions, db, events, ingest, login, session
+from backend import (api, api_dashboard, api_sessions, db, events, ingest,
+                     login, session, version)
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -127,12 +128,17 @@ def health() -> dict:
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False, "db": False, "error": str(e),
+            "version": version.VERSION,
             "parser_version": parser_version,
             "now": datetime.now(timezone.utc).isoformat(),
         }
     return {
         "ok": True, "db": True,
         "last_ingest": last_ingest,
+        # Which build is answering. The DB-error branch above reports it
+        # too: "which version is broken" is exactly the question asked when
+        # /health is failing, so it must not be the field that goes missing.
+        "version": version.VERSION,
         "parser_version": parser_version,
         "now": datetime.now(timezone.utc).isoformat(),
     }
