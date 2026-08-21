@@ -35,6 +35,12 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Least privilege: every job here only reads the tree. Without an
+# explicit block the job inherits the repository default, which can be
+# read/write for the whole token.
+permissions:
+  contents: read
+
 concurrency:
   group: eslint-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -47,15 +53,27 @@ jobs:
       github.event.review.state == 'approved'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Nothing in this workflow pushes. Leaving the job token in
+          # .git/config lets any later step — or anything a dependency
+          # pulls in — reuse it.
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
       - name: Install eslint (pinned, no package.json, no build step)
+        # zizmor: ignore[adhoc-packages]
+        # The finding is "installs a package outside of a lockfile", and the
+        # absence of a lockfile is the deliberate design documented at the
+        # top of this file: a package.json here would read as the repo having
+        # adopted a build step, which it has not. Both packages ARE pinned to
+        # an exact version, so the risk the audit targets — an unpinned
+        # install drifting under CI — does not apply. Revisit if the frontend
+        # ever gains a real toolchain.
         run: npm install --no-save --no-package-lock --no-audit --no-fund eslint@8.57.1 eslint-plugin-react@7.37.5
 
       - name: eslint
