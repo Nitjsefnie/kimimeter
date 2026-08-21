@@ -2,7 +2,8 @@ import json
 import os
 import shutil
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -23,22 +24,27 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 def _pg_cur():
     """Cursor over a direct psycopg connection to the scratch DB.
 
-    Written WITHOUT `with psycopg.connect(...)`: pylint infers the
-    return of Connection.connect as None (it cannot follow the retry
-    loop's reassignment) and reports not-context-manager — a false
-    positive this explicit try/finally sidesteps while keeping the same
-    commit-on-success / rollback-on-error semantics.
+    Deliberately NOT `with psycopg.connect(...) as conn`: pylint infers
+    the return of Connection.connect as None and reports
+    not-context-manager, a false positive.
+
+    `contextlib.closing` rather than a bare assignment plus try/finally,
+    which is what this used to be. pylint 4.0.7 against psycopg 3.3
+    infers a bare `conn = psycopg.connect(...)` as `Class 'value'` and
+    then reports no-member on every .cursor()/.commit()/.close() — and
+    annotating the variable does not help, because it cannot resolve
+    `psycopg.Connection` either. Routing through closing() sidesteps both
+    false positives without disabling no-member, which would switch the
+    check off for genuine mistakes in here too. It is also what the
+    sibling repo already does.
+
+    Semantics are unchanged: commit on success, close always. closing()
+    only closes, so the commit stays explicit.
     """
-    conn = psycopg.connect(os.environ["DATABASE_URL_VIZ"])
-    try:
-        cur = conn.cursor()
-        try:
+    with closing(psycopg.connect(os.environ["DATABASE_URL_VIZ"])) as conn:
+        with closing(conn.cursor()) as cur:
             yield cur
-        finally:
-            cur.close()
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _build_app(monkeypatch, pre_ingest=None, test_db="kimimeter_test_api"):
@@ -891,8 +897,15 @@ def test_a_malformed_hit_ts_does_not_take_down_the_dashboard(app_with_fresh_data
                 {"ts": "2026-02-30T00:00:00Z", "content": "30th of february"},
                 {"ts": "2026-01-01 25:00:00Z", "content": "hour 25"},
                 {"ts": "2026-01-01T00:00:00Z lolwat", "content": "trailing junk"},
-                # Valid, and on either side of the range boundary.
-                {"ts": "2026-07-20T10:00:00Z", "content": "good hit"},
+                # Valid, and on either side of the range boundary. The
+                # in-range one is computed RELATIVE TO NOW: pinned to an
+                # absolute date it silently stops being inside `range=30d`
+                # once the calendar passes it, and the test then fails for
+                # a reason that has nothing to do with what it checks.
+                # That is exactly what happened here — it was pinned to
+                # 2026-07-20 and began failing on 2026-08-19.
+                {"ts": (datetime.now(timezone.utc) - timedelta(days=5)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"), "content": "good hit"},
                 {"ts": "1998-01-01T00:00:00Z", "content": "too old"},
             ]),),
         )
