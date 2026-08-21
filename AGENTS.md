@@ -117,6 +117,82 @@
 - **In-browser fallback retained:** The drag-drop FileReader path in
   `src/app.jsx` stays as an offline fallback. No upload endpoint exists.
 
+## CI — batch your pushes
+
+**There are TEN workflows, not one.** `tests.yml` is the one people
+remember, and a green pytest says nothing about the other nine. Six run
+locally — run them before pushing, because CI is the backstop, not the
+first check:
+
+```bash
+python3 -m pytest tests/ -q --cov=backend          # tests.yml (+ coverage)
+git ls-files -co --exclude-standard '*.py' | xargs pylint       # lint.yml, gate 1
+git ls-files -co --exclude-standard '*.py' | xargs pycodestyle  # lint.yml, gate 2
+pyright                                            # types.yml
+npx --no-install eslint 'src/**/*.js' 'src/**/*.jsx'  # eslint.yml
+python3 scripts/ci/smoke.py                        # smoke.yml
+pip-audit -r backend/requirements.txt -r requirements-dev.txt \
+          -r requirements-test.txt                 # audit.yml
+actionlint .github/workflows/*.yml && \
+  zizmor .github/workflows/                        # actionlint.yml
+```
+
+**Run them against the PINNED deps**, not whatever your interpreter has.
+`pyright` resolves third-party types from the installed packages, so a
+stale local psycopg makes it disagree with CI:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r backend/requirements.txt -r requirements-dev.txt -r requirements-test.txt
+# or point pyright at an existing one:
+pyright --pythonpath /path/to/venv/bin/python
+```
+
+**`-co --exclude-standard`, not a bare `git ls-files`.** CI lints the
+committed tree, so the workflow's own `git ls-files '*.py'` is right
+*there*. Locally it is a trap: a brand-new module is untracked until you
+stage it, so pylint reports a clean run over every file except the one
+you just wrote.
+
+The four that only make sense on GitHub:
+
+| Workflow | Question it answers | Trigger |
+| --- | --- | --- |
+| `codeql.yml` | Is there a security defect in the Python or JS? Results go to the Security tab, never the build. | push + weekly cron. The cron is NOT redundant: a query published today would otherwise only ever run against files touched after it shipped. Deliberately skips `pull_request_review`, because `analyze` files SARIF against the *event's* SHA while our checkout takes the PR head — two different commits. |
+| `audit.yml` | Are the frozen pins still free of advisories? Resolves the full transitive tree, which is the point — nothing here pins `starlette`. | push + **daily** cron. The cron is the important half: this answer changes with no commit to hang it on. |
+| `speed.yml` | Did the tests that exist in both this commit and the last release get >30% slower? | push. Runs BOTH builds on the same runner, interleaved, min-of-rounds. Skips green while no release exists. |
+| `release.yml` | — | push to `master` touching `VERSION`. Waits for every other check on that SHA, then tags `v<VERSION>`. |
+
+**Coverage is a ratchet at 82%**, in `tests.yml`, checked by a step of its
+own so "tests failed" and "coverage dropped" stay distinguishable. Raise
+the floor as coverage climbs; never lower it to turn a build green.
+
+**Release = edit `VERSION`.** One bare semver line at the repo root, no
+leading `v`. `release.yml` reacts to it; nothing bumps it automatically,
+because deciding patch-vs-minor is a judgement about what changed.
+`backend/version.py` reads it and `/health` reports it.
+
+**Actions are hash-pinned**, with the version in a trailing comment. Do
+not "tidy" one back to `@v4`: a tag is a moving pointer, and these jobs
+hold a repository token. Dependabot keeps the hashes current. Every
+workflow also sets `permissions:` explicitly and passes
+`persist-credentials: false` to checkout — `zizmor` enforces all three,
+and a suppression belongs at the offending line with a justification,
+never as a raised `--min-severity`.
+
+**`.gitignore` is deny-by-default**: `*` first, then each shipped path
+named back. A new file of an unlisted type is invisible to git and will
+NOT appear in `git status` — `git check-ignore -v <path>` names the rule
+hiding it, and the fix is a name-back rule in the file's own directory
+block. Never "fix" it by loosening the leading `*`.
+
+**Dates in tests must be relative to now.** A fixture pinned to an
+absolute timestamp inside a `range=30d` assertion silently leaves the
+window as the calendar advances, and then fails for a reason unrelated to
+what it checks. That is not hypothetical: the malformed-`ts` test in
+`tests/test_api.py` was pinned to 2026-07-20 and started failing on
+2026-08-19.
+
 ## Operations
 
 - Manual ingest: `POST /admin/ingest` with `X-Admin-Token: $ADMIN_TOKEN`.

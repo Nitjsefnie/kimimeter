@@ -80,9 +80,47 @@ without real data.
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q             # full suite
+python3 -m pytest tests/ -q --cov=backend   # full suite (+ coverage)
 python3 -m pytest tests/test_pricing.py -v
 ```
+
+CI runs **ten** separate workflows, so a green suite is a small fraction
+of the gate. These six you can and should run locally before pushing:
+
+```bash
+git ls-files -co --exclude-standard '*.py' | xargs pylint       # lint, gate 1
+git ls-files -co --exclude-standard '*.py' | xargs pycodestyle  # lint, gate 2
+pyright                                                         # types
+npx --no-install eslint 'src/**/*.js' 'src/**/*.jsx'            # eslint
+python3 scripts/ci/smoke.py                                     # smoke
+pip-audit -r backend/requirements.txt -r requirements-dev.txt \
+          -r requirements-test.txt                              # audit
+```
+
+`pip install -r requirements-dev.txt -r requirements-test.txt` gets the
+pinned toolchain. Run these against an environment holding the **pinned**
+runtime deps as well (`pip install -r backend/requirements.txt`):
+`pyright` resolves third-party types from the installed packages, so a
+stale local one disagrees with CI. Point it at a venv with
+`pyright --pythonpath /path/to/venv/bin/python` if you keep them separate.
+
+Coverage is gated at 82% — a ratchet set under the current number, not a
+target.
+
+The remaining four need GitHub: `codeql` (security analysis, weekly cron),
+`audit` (`pip-audit`, daily cron), `actionlint` (lints the workflows
+themselves), `speed` (benchmarks this commit against the last release on
+the same runner, fails at >30%), and `release` (tags `v<VERSION>` once
+every other check on the commit passes).
+
+Use `-co --exclude-standard`, not a bare `git ls-files`: a brand-new
+module is untracked until you stage it, and pylint would report a clean
+run over every file except the one you just wrote.
+
+**Dates in tests go relative to now.** A fixture pinned to an absolute
+timestamp inside a `range=30d` assertion leaves the window as the
+calendar advances and then fails for a reason unrelated to what it
+checks — which is exactly what happened to the malformed-`ts` test.
 
 The suite creates and drops its own test databases, so it needs a Postgres
 your user can `createdb` on. It does not touch your real data and never
